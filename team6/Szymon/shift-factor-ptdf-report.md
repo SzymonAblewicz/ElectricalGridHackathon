@@ -4,6 +4,13 @@
 **Team 6 — Electrical Grid Hackathon 2026**
 **Scope:** intact (base-case) network only. No outages, no open circuits, no contingencies.
 
+> **Revision note — Stage 4 only.** Stages 1, 2 and 3 are unchanged from the original version of this
+> document. Stage 4 has been corrected to carry the **phase-shifting transformer term**, which the
+> original omitted. The correction is derived in §4.2, verified numerically in §4.9, and the original
+> form is kept in full in **Appendix A** with an explicit statement of when it is still valid.
+> Nothing else in the pipeline moves. `PTDF` itself is *identical* under both versions — the
+> phase-shift term does not enter it.
+
 ---
 
 ## Purpose
@@ -23,12 +30,13 @@ This is the quantity EirGrid calls a **shift factor** and the literature calls a
 ```
 K = incidence          buses × branches,  +1 at from, −1 at to
 B = diag(1/x)          branches × branches
+φ = phase shifts       branches, radians (zero for every ordinary line)
 L = K B Kᵀ             buses × buses
 ```
 
 `K` encodes the topology, `B` encodes how easily each line carries power. Together they give `L`, the conductance matrix of the whole grid — so `Lθ = p` is just KCL written at every bus.
 
-Per-unit reactances are fine; PTDF is invariant to any global scaling of `B`.
+Per-unit reactances are fine for the PTDF; it is invariant to any global scaling of `B`. `φ` is zero for every line and every ordinary transformer, and non-zero only for phase shifters — it is not used until Stage 4, and there `B` must be in true MW/radian (§1.5).
 
 ## 2. Take the Moore–Penrose pseudoinverse
 
@@ -53,7 +61,8 @@ PTDF = B Kᵀ L⁺         branches × buses, dimensionless
 ## 4. Correct the sign direction
 
 ```
-f = PTDF @ p                              net injection per bus, sums to ≈ 0
+p_eff = p + K B φ                         net injection per bus, sums to ≈ 0
+f     = PTDF @ p_eff − B φ                actual branch flows, MW
 sensitivity = PTDF[e,:] * sign(f[e])
 ```
 
@@ -61,9 +70,11 @@ sensitivity = PTDF[e,:] * sign(f[e])
 
 Multiplying by `sign(f[e])` re-points the axis along the real flow direction. Then **positive means curtailing there relieves congestion**, matching EirGrid.
 
+A phase shifter imposes an angle of its own, so it acts as a pair of equal-and-opposite injections. That is why it enters as a modified injection vector `p_eff` and a constant `−Bφ`, and why `PTDF` is untouched by it. With no shifters in the network `φ = 0` and this collapses to `f = PTDF @ p`.
+
 ---
 
-**Debug check, 2 lines, run once:** `np.allclose(f, n.lpf_flows)`. Catches a flipped orientation in `K`, the one bug that otherwise fails silently. Produces nothing you keep.
+**Debug check, 2 lines, run once:** `np.allclose(f, n.lpf_flows)`. Catches a flipped orientation in `K` and a dropped phase-shift term — the two bugs that otherwise fail silently. Produces nothing you keep.
 
 **Conditional — reference subtraction:** `PTDF[e,:] − PTDF[e,ref]`. Only if you're matching someone else's numbers, since it just shifts every node by the same constant and can't change your ranking. You'd need it against a kit-provided PTDF table, a library cross-check (MATPOWER's `makePTDF` and friends default to single-slack, not distributed), or EirGrid's own figures, which balance at a remote conventional generator.
 
@@ -111,6 +122,8 @@ f_e = (θ_from(e) − θ_to(e)) / x_e
 | Ohm's law on a branch | `f = B Kᵀ θ` |
 
 This is the classical bus-admittance / nodal formulation described in any power systems text [1, 4].
+
+**One extension to this base model.** The relations above assume no branch imposes an angle of its own. A **phase-shifting transformer** does, which generalises the flow equation to `f_e = b_e(θᵢ − θⱼ − φ_e)` and the bus equation to `Lθ = p + K B φ`. This is introduced in §1.5 and handled in §4.2. It leaves `PTDF` completely unchanged (§4.4), which is why it does not appear until Stage 4. On a network with no phase shifters the two forms are identical.
 
 ---
 
@@ -164,14 +177,44 @@ which is **Kirchhoff's Current Law written at every bus simultaneously**: net po
 - `L⁺ = (cL)⁺ = L⁺/c`  (a Moore–Penrose property of scalar multiples)
 - `PTDF = (cB)Kᵀ(L⁺/c) = B Kᵀ L⁺` — the `c` cancels. ∎
 
-**Practical consequence:** you do not need an MVA base, and you do not need to convert per-unit reactances into MW/radian. Feed the reactances in whatever consistent units the data provides. This eliminates a common and hard-to-spot source of error.
+**Practical consequence:** for **the PTDF** you do not need an MVA base, and you do not need to convert per-unit reactances into MW/radian. Feed the reactances in whatever consistent units the data provides. This eliminates a common and hard-to-spot source of error.
 
-**Important caveat — this does *not* extend to the angles.** From the same algebra, `θ = L⁺p` scales as `θ → θ/c`. So:
+**Caveat 1 — this does *not* extend to the angles.** From the same algebra, `θ = L⁺p` scales as `θ → θ/c`. So:
 
-- **`PTDF` and `f` are always correct**, regardless of `B`'s units.
+- **`PTDF` is always correct**, regardless of `B`'s units.
 - **`θ` is only physically meaningful in radians if `B` is genuinely in MW/radian** and `p` in MW.
 
 We never use `θ` directly in this pipeline, so this costs us nothing. But do not print the angles and expect them to be in radians unless you have been careful with units.
+
+**Caveat 2 — and this one does cost us. Scale invariance does *not* extend to Stage 4 when phase shifters are present.** Stage 4 forms `p_eff = p + K B φ`, which **adds** a `B`-weighted term to a vector in MW. Under `B → cB` that term scales but `p` does not, so the sum is not proportional to anything and the resulting flows are simply wrong.
+
+Concretely:
+
+| Quantity | `B` in arbitrary units? |
+|---|---|
+| `PTDF = B Kᵀ L⁺` | Fine — `c` cancels (proved above) |
+| `f = PTDF @ p` (no shifters, `φ = 0`) | Fine — no `B`-weighted additive term |
+| `p_eff = p + K B φ` and `f = PTDF @ p_eff − B φ` | **`B` must be in genuine MW/radian** |
+
+So the rule is: Stages 1–3 tolerate any scaling of `B`; **Stage 4 does not, once `φ ≠ 0`.** If you build `B` yourself from raw per-unit reactances, `b_e = S_base / x_pu,e` with `S_base` the MVA base of the per-unit system.
+
+**On the participant kit specifically:** PyPSA's `x_pu_eff` is per-unit on a **1 MVA base**, so `1/x_pu_eff` is *already* in MW/radian and no conversion is needed. This was checked directly against the raw data rather than assumed: for line `1021-2121-1`, `x = 7.634011 Ω` at `v_nom = 110 kV` gives `x_pu_eff · v_nom² / x = 1.000 MVA` exactly. See §4.9.
+
+### 1.5 What `φ` is
+
+`φ` is the vector of **phase-shift angles**, one per branch, in radians. It is zero for every ordinary line and every ordinary transformer, and non-zero only for **phase-shifting transformers** — devices that deliberately impose a fixed angle across themselves in order to push power onto or off a particular route.
+
+For a branch with a phase shift, DC flow is not `b(θᵢ − θⱼ)` but
+
+```
+f_e = b_e (θᵢ − θⱼ − φ_e)
+```
+
+Nothing in Stages 1–3 uses `φ`; it enters only at Stage 4, and §4.2 shows exactly how and why `PTDF` is unaffected.
+
+**Where to get it.** In PyPSA it is `transformers["phase_shift"]`, stored in **degrees** — convert with `np.radians`. Lines have no such column; treat them as zero.
+
+**Do not assume it is zero.** The kit's `WP2033_all-island` network has two phase-shifting transformers, one of them at **17°**. Ignoring them puts the flow on the most heavily loaded circuit in the network out by **78.8 MW** (§4.9).
 
 ---
 
@@ -304,10 +347,69 @@ Congestion, however, is about **magnitude** — `|f|` against the thermal rating
 
 **So the sign that indicates "relieves congestion" flips depending on an arbitrary labelling choice.**
 
-### 4.2 The fix
+### 4.2 Getting `f` right: the phase-shift term
+
+To take `sign(f[e])` we first need `f[e]`, and this is the one place in the pipeline where the naive expression is not good enough.
+
+**The model.** A phase-shifting transformer imposes a fixed angle `φ_e` across itself, so its flow is
 
 ```
-f = PTDF @ p
+f_e = b_e (θᵢ − θⱼ − φ_e)          i.e.   f = B(Kᵀθ − φ)
+```
+
+**Propagate it to the bus equation.** KCL still says `K f = p` — injections must equal the net flow out of each bus. Substituting:
+
+```
+K B (Kᵀθ − φ) = p
+K B Kᵀ θ      = p + K B φ
+L θ           = p + K B φ
+```
+
+So the shifter appears on the right-hand side, in exactly the position an injection occupies. **That is the physical content: a phase shifter behaves as a pair of equal-and-opposite injections at its two ends.** It is not a new kind of object in the model.
+
+**Collapse it into one substitution.** Define
+
+```
+p_eff = p + K B φ
+```
+
+Then the entire Stage 2–3 machinery applies unchanged:
+
+```
+θ = L⁺ p_eff
+f = B Kᵀ θ − B φ
+  = (B Kᵀ L⁺) p_eff − B φ
+  = PTDF · p_eff − B φ
+```
+
+Same `L⁺`. Same `PTDF`. Same single matrix multiply. The shifter costs one modified input vector and one constant subtraction — **no new operator and no change to Stages 1–3.**
+
+**Three properties that confirm this is the right form:**
+
+**(i) `p_eff` still sums to zero.** Every column of `K` has one `+1` and one `−1`, so `Kᵀ1 = 0`, hence
+
+```
+1ᵀ p_eff = 1ᵀp + 1ᵀK B φ = 0 + (Kᵀ1)ᵀ B φ = 0
+```
+
+So the balance precondition of §2.4 carries over **unchanged**. Nothing new to check, and the pseudoinverse is still being handed a vector in `range(L)`. Verified numerically at `1ᵀp_eff = 0.000e+00` (§4.9).
+
+**(ii) It is an affine offset, not a different model.** Expanding the substitution back out:
+
+```
+f = PTDF·p + (PTDF·K − I) B φ
+  = PTDF·p + c
+```
+
+where `c = (B Kᵀ L⁺ K − I) B φ` **does not depend on `p` at all**. So the original `f = PTDF @ p` is not a different model — it is this model with the constant `c` discarded. `c` is computed once and reused for every snapshot. (Both forms agree to `1.7e-13 MW`; §4.9.)
+
+**(iii) `φ = 0` recovers the original exactly.** Every line and every ordinary transformer has `φ_e = 0`, so on a network with no phase shifters `p_eff = p`, `Bφ = 0`, and this reduces term-by-term to `f = PTDF @ p`. See Appendix A.
+
+### 4.3 The fix
+
+```
+p_eff = p + K B φ
+f     = PTDF @ p_eff − B φ
 sensitivity = PTDF[e,:] * sign(f[e])
 ```
 
@@ -316,7 +418,19 @@ sensitivity = PTDF[e,:] * sign(f[e])
 
 The result is a sensitivity measured on an axis that **always points along the actual direction of flow.**
 
-### 4.3 Verification that this matches EirGrid's convention
+### 4.4 Why `PTDF` is untouched by any of this
+
+Worth stating plainly, because it is the reason the correction is confined to Stage 4:
+
+```
+∂f/∂p = ∂(PTDF·p_eff − Bφ)/∂p = PTDF · ∂p_eff/∂p = PTDF · I = PTDF
+```
+
+`φ` is a **fixed device setting**, not a function of `p`. Differentiating with respect to injections kills it. Both the `K B φ` term and the `− B φ` term are constants and vanish.
+
+**Consequence: the shift factor for every edge `e` and every wind node `n` is numerically identical whether or not you model phase shifters.** The correction does not improve the sensitivity values — they were already exact. It fixes the *base flows*, and therefore the *orientation* those sensitivities are reported on, and therefore which lines you identify as congested in the first place.
+
+### 4.5 Verification that this matches EirGrid's convention
 
 EirGrid's stated convention: positive shift factor means reducing generation at that node relieves congestion; negative means it worsens it [3].
 
@@ -329,7 +443,7 @@ Both match. The convention is correct.
 
 **Intuition:** think of the change in flow as a small vector along the line. Positive `S` means the change points *against* the existing flow (magnitude falls). Negative `S` means it points *with* it (magnitude rises).
 
-### 4.4 Why this is not cosmetic
+### 4.6 Why the sign correction is not cosmetic
 
 Multiplying a row by `−1` **reverses the ranking**. The wind farms that appeared most effective become the least effective and vice versa.
 
@@ -337,25 +451,57 @@ Since the `from`/`to` labelling is essentially random with respect to flow direc
 
 Skipping Stage 4 does not give slightly-off numbers. It gives a completely wrong constraint group on half the lines.
 
-### 4.5 Why `p` is needed here
+### 4.7 Why `p` is needed here
 
 Stages 1–3 are pure network properties — they depend only on topology and reactance, and are valid for every hour of the year. Stage 4 is the first point that requires a **dispatch snapshot**: actual net injections per bus for the hour being studied.
 
 This is unavoidable. Flow direction depends on what is actually generating and consuming, not on the wires alone.
 
-`p` must satisfy `p.sum() ≈ 0` (see §2.4).
+`p` must satisfy `p.sum() ≈ 0` (see §2.4). As shown in §4.2(i), `p_eff` inherits this automatically — adding the phase-shift term introduces no new balance condition.
 
-### 4.6 Edge case: `f[e] ≈ 0`
+### 4.8 Edge cases
 
-`sign(0)` returns `0` in NumPy, which would zero out the entire sensitivity row silently.
+**`f[e] ≈ 0`.** `sign(0)` returns `0` in NumPy, which would zero out the entire sensitivity row silently.
 
-Guard it. In practice a line carrying no flow is not congested and should not be in the monitored set, so this should not arise for lines we care about — but a bare `np.sign` on a full flow vector will hit it.
+Guard it. In practice a line carrying no flow is not congested and should not be in the monitored set, so this should not arise for lines we care about — but a bare `np.sign` on a full flow vector will hit it. On the kit's network, 6 branches sit close enough to zero flow that their sign is numerical noise (§4.9) — they are all lightly loaded and none is a monitoring candidate, but they are there.
 
-### 4.7 Linearity caveat
-
-Under the linear model, curtailing far enough drives the flow through zero and it then grows in the opposite direction. "Positive `S` = relief" therefore holds only up to that crossing point.
+**Linearity caveat.** Under the linear model, curtailing far enough drives the flow through zero and it then grows in the opposite direction. "Positive `S` = relief" therefore holds only up to that crossing point.
 
 Not a practical concern at the curtailment magnitudes involved, but it is why the statement is not unconditionally true.
+
+### 4.9 Numerical verification on the kit's network
+
+Everything in §4.2 was checked directly against the participant kit's `WP2033_all-island` network (754 buses, 980 DC branches, 2 phase shifters at 3° and 17°) rather than asserted. Flows were compared against **PyPSA's own `n.lpf()` DC solver** [8], which is an independent implementation.
+
+**Setup:** dispatch solved with HiGHS, frozen into `p_set`, `n.lpf()` run, injections taken from the resulting generator/load/link powers.
+
+| Check | Result |
+|---|---|
+| `1ᵀ p` (balance precondition, §2.4) | `0.000e+00` |
+| `1ᵀ p_eff` (balance preserved, §4.2(i)) | `0.000e+00` |
+| `f = PTDF·p_eff − Bφ` vs `n.lpf()` | **`1.7e-09 MW`** ✔ |
+| `f = PTDF·p` vs `n.lpf()` (Appendix A form) | **`7.88e+01 MW`** ✘ |
+| `PTDF·p_eff − Bφ` vs `PTDF·p + c` (§4.2(ii)) | `1.7e-13 MW` — the two algebraic forms agree |
+| PyPSA per-unit base, from `x_pu_eff·v_nom²/x` | `1.000 MVA` exactly, so `1/x_pu_eff` is already MW/rad (§1.4) |
+
+**What omitting the term actually costs.** Not a uniform small error — a badly skewed one:
+
+- **272 of 980 branches** wrong by more than 1 MW; **63** wrong by more than 10 MW.
+- **13 branches (1.3%) get the opposite sign of `f`**, so their entire sensitivity row is flipped and their ranking reversed. A further 6 differ only at `|f| < 1 MW`, which is the §4.8 numerical-zero case rather than a genuine flip.
+- Worst single error: **78.8 MW**.
+
+**And the worst error lands on the worst possible branch.** Branch `3581-89516-1` — the Northern Ireland tie, and the kit's own documented example of a circuit worth studying:
+
+| | flow | rating | loading |
+|---|---|---|---|
+| Correct (`PTDF·p_eff − Bφ`) | 123.00 MW | 123 MVA | **100.0 %** |
+| Omitting the shifter term | 44.16 MW | 123 MVA | 35.9 % |
+
+The two transformers in series with it (`T89510-89515-1`, `T89515-89516-1`) show the same 78.8 MW error at 98.4 % loading.
+
+This is worse than a sign error. Under the original Stage 4 this circuit is **not congested at all** — it is at a third of its rating, would never be selected as a monitored line, and would never have a constraint group computed for it. The single binding constraint in the network disappears.
+
+That is the concrete justification for the revision: not accuracy of the sensitivity numbers, which are unchanged (§4.4), but **correctly identifying which line is congested and which way its flow runs.**
 
 ---
 
@@ -371,12 +517,15 @@ assert np.allclose(f, n.lpf_flows, atol=1e-9)
 
 **What it does.** It compares two independent routes to the same DC flows:
 
-1. Our analytic route: `f = PTDF @ p`
+1. Our analytic route: `f = PTDF @ p_eff − B φ`
 2. An independent DC power flow solver — e.g. PyPSA's `n.lpf()` [8]
 
-Both should agree to ~1e-10 MW, since branch flows are independent of slack convention given balanced injections.
+Both should agree to ~1e-9 MW, since branch flows are independent of slack convention given balanced injections.
 
-**What it catches.** Almost exclusively: a flipped or wrong orientation in `K`. That is the single most common construction error and it fails *silently* — you get a full, plausible-looking, entirely wrong matrix.
+**What it catches.** Two things, both of which fail *silently* and leave you with a full, plausible-looking, entirely wrong matrix:
+
+1. **A flipped or wrong orientation in `K`** — the single most common construction error.
+2. **A dropped or mis-signed phase-shift term.** This is why the check earns its place rather than being a formality: on the kit's network it is the difference between `1.7e-09 MW` and `7.9e+01 MW` (§4.9). If your residual comes back at tens of MW rather than ~1e-9, `φ` is the first thing to look at, and the branches with the largest residuals will be the ones sitting next to the shifters.
 
 **What it does NOT establish.** This is an internal arithmetic-consistency check between two DC methods. It says nothing about:
 
@@ -438,12 +587,14 @@ If we are only ranking wind farms within our own model, this stage does nothing 
 
 | Stage | Status | One-line reason |
 |---|---|---|
-| 1. Build `K`, `B`, `L` | Required | The network |
+| 1. Build `K`, `B`, `φ`, `L` | Required | The network |
 | 2. `L⁺ = pinv(L)` | Required | `L` is singular; fixes the angle reference |
 | 3. `PTDF = B Kᵀ L⁺` | Required | This is the metric |
-| 4. Sign correction | Required | Otherwise ~half the lines rank backwards |
-| D. Debug check | Optional, 2 lines | Catches silent `K` orientation bugs |
+| 4. Sign correction, via `p_eff` | Required | Otherwise ~half the lines rank backwards, and congested lines are missed |
+| D. Debug check | Optional, 2 lines | Catches silent `K` orientation and dropped-`φ` bugs |
 | C. Reference subtraction | Conditional | Only to match an external convention |
+
+**Where the snapshot dependence lives.** Stages 1–3 depend only on topology and reactance and are valid for every hour of the year: one `PTDF` matrix, computed once, `n_branch × n_bus`. Stage 4 is the only snapshot-dependent step, because `sign(f[e])` depends on what is generating and consuming that hour. So for the full every-edge × every-wind-node computation you get **one PTDF block for all time, and one signed sensitivity matrix per snapshot.** Pick the snapshot deliberately — peak loading on the monitored circuit is the usual choice — and state which one you used.
 
 ---
 
@@ -464,7 +615,11 @@ https://cms.eirgrid.ie/sites/default/files/publications/Wind-Dispatch-Tool-Const
 
 **[7]** Penrose, R. — "A generalized inverse for matrices", *Mathematical Proceedings of the Cambridge Philosophical Society*, 51(3), 1955, pp. 406–413. Defines the pseudoinverse and its four characterising conditions.
 
-**[8]** Brown, T., Hörsch, J., Schlachtberger, D. — "PyPSA: Python for Power System Analysis", *Journal of Open Research Software*, 6(4), 2018. Source of the independent `lpf()` DC solver used in the debug check.
+**[8]** Brown, T., Hörsch, J., Schlachtberger, D. — "PyPSA: Python for Power System Analysis", *Journal of Open Research Software*, 6(4), 2018. Source of the independent `lpf()` DC solver used in the debug check and in §4.9.
+
+**[9]** Hackathon participant kit — `participant-kit/flowmath.py` (functions `branches`, `incidence`, `laplacian`, `pseudoinverse`, `ptdf`, `injections`, `angles`, `flows`) and `examples/d_ptdf.py`, `examples/f_shift_factors.py`. An independent implementation of Stages 1–3 identical to ours, and the source of the phase-shift treatment adopted in Stage 4. Its docstring for `angles()` states the same relations derived in §4.2: `F_e = b_e(θᵢ − θⱼ − φ_e)` and `Lθ = p + K B φ`. Local copy: `team6/Szymon/participant-kit new/`, unmodified control copy at `team6/Szymon/participant kit original (from the repo)/`.
+
+**[10]** Network data — `TYTFS2024` / `WP2033_all-island`, as shipped in the participant kit (754 buses, 755 lines, 225 transformers, 929 generators, 168 hourly snapshots). Derived by the kit authors from EirGrid's Ten Year Transmission Forecast Statement 2024 study files. **All time series in it are synthetic**, and its `s_nom` ratings are TYTFS `RATE1` planning values, not operational limits — see the kit's own `README.md` LIMITATIONS section before quoting any absolute number from it.
 
 ---
 
@@ -472,7 +627,66 @@ https://cms.eirgrid.ie/sites/default/files/publications/Wind-Dispatch-Tool-Const
 
 For honesty about what has and has not been checked:
 
-- **The derivations in §1.4, §2.1, §2.3, §2.4 and §4.3 are proved inline in this document.** They do not depend on any citation being accurate — check the algebra directly.
+- **The derivations in §1.4, §2.1, §2.3, §2.4, §4.2, §4.4 and §4.5 are proved inline in this document.** They do not depend on any citation being accurate — check the algebra directly.
+- **§4.9 was executed, not asserted.** The numbers in it (`1.7e-09` vs `7.88e+01 MW`, 272 / 63 / 13 branch counts, the 100.0 % vs 35.9 % loading on `3581-89516-1`, and the 1.000 MVA per-unit base) come from running the computation on the kit's `WP2033_all-island` network and comparing against PyPSA's independent `n.lpf()` solver [8]. They are reproducible from the kit copy in this folder. Note they are for **one snapshot** of a solved dispatch — the exact figures move between hours, the conclusion does not.
 - **References [1], [2], [4], [5], [6], [7], [8]** are cited at the level of author / title / venue / year. They are standard, widely-cited works and the attributions are reliable, but **specific page numbers, equation numbers, and exact wording have not been verified against the sources in preparing this document.** Verify before quoting any of them directly in a submission.
 - **Reference [3] (EirGrid WDT document)** — the specific claims attributed to it here (shift factor definition, 10 MW perturbation, remote conventional generator balancing, sign convention, voltage-stability groups) come from prior research notes, not from re-reading the PDF while writing this. The URL is included. **Verify directly before citing in a submission**, particularly the balancing-generator detail, which drives the Conditional stage §C.3.
 - **No claim in this document asserts agreement between our numbers and EirGrid's published figures.** We have not established that, and the thresholds EirGrid uses for constraint group membership are not public [3], so it may not be establishable.
+
+---
+---
+
+# Appendix A — the original Stage 4 (no phase-shift term)
+
+This is the Stage 4 this pipeline originally specified. It is kept because it is **not wrong** — it is a special case, it is correct whenever its precondition holds, and it is what you should reach for on any network without phase shifters.
+
+## A.1 The original form
+
+```
+f = PTDF @ p                              net injection per bus, sums to ≈ 0
+sensitivity = PTDF[e,:] * sign(f[e])
+```
+
+## A.2 Exactly when it is valid
+
+**It is exact if and only if `φ_e = 0` for every branch** — no phase-shifting transformers anywhere in the network.
+
+That is not a rare condition. Ordinary lines never have a phase shift, ordinary transformers never have one, and many test networks and regional subsets contain no shifters at all. On such a network `p_eff = p`, `Bφ = 0`, and §4.2 reduces term-by-term to the expression above. The two forms are then **identical, not approximately equal**.
+
+Check it in one line before relying on it:
+
+```python
+assert (np.abs(phi) < 1e-9).all(), "network has phase shifters — use the p_eff form"
+```
+
+## A.3 What goes wrong when it is not valid
+
+The omitted quantity is `c = (B Kᵀ L⁺ K − I) B φ`, a constant vector independent of `p` (§4.2(ii)). It does not scale down with anything and it does not average out. On the kit's `WP2033_all-island` network (§4.9):
+
+- 272 of 980 branches wrong by more than 1 MW, 63 by more than 10 MW, worst 78.8 MW
+- 13 branches get the **opposite sign of `f`**, flipping their whole sensitivity row
+- the most heavily loaded circuit in the network, `3581-89516-1`, reads **35.9 % loaded instead of 100 %** — it stops looking congested at all
+
+The failure is concentrated, not diffuse: it is worst on exactly the branches electrically closest to the shifters, which on this network happen to include the binding constraint.
+
+## A.4 Why it is still worth keeping in this document
+
+**Three reasons, in order of practical value:**
+
+1. **It is the right form on a shifter-free network.** Simpler, one fewer vector to build, one fewer place to get a sign or a unit wrong. If `φ = 0` everywhere, use it.
+
+2. **It does not require `B` in physical units.** This is a genuine advantage. The `p_eff` form adds a `B`-weighted term to a vector in MW, so it needs `B` in true MW/radian (§1.4, Caveat 2). The original form is fully scale-invariant — `f = PTDF @ p` inherits `PTDF`'s immunity to `B → cB`, so you can feed it raw per-unit reactances with no MVA base at all and still get correct flows in MW. If you are working from a data source whose per-unit base you cannot establish, and the network has no shifters, this form removes an entire class of error.
+
+3. **It isolates what the correction actually did.** `PTDF` is bit-for-bit identical under both forms (§4.4). Running the two side by side and differencing shows the phase-shift contribution in isolation, which is a clean way to demonstrate that the sensitivity values never changed and only the base flows did.
+
+## A.5 Summary
+
+| | Original (A.1) | Corrected (§4.3) |
+|---|---|---|
+| Expression | `f = PTDF @ p` | `f = PTDF @ p_eff − Bφ` |
+| `PTDF` values | identical | identical |
+| Exact when | `φ = 0` everywhere | always |
+| Needs `B` in MW/rad | no | **yes** |
+| On `WP2033_all-island` | 78.8 MW error, misses the binding constraint | matches `n.lpf()` to 1.7e-09 MW |
+
+**Default: use the corrected form.** It is exact in both cases, and the only thing it asks of you is that `B` be in real units — which, on the participant kit, it already is.
