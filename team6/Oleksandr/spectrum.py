@@ -208,7 +208,7 @@ def main() -> None:
         case=np.array(CASE),
         generators=np.array(GENERATORS),
     )
-    plot(values, suggested, out / f"{stem}.png",
+    plot(values, suggested, out / f"{stem}.pdf",
          f"{CASE}{' +generators' if GENERATORS else ''} — {EMBEDDING}")
 
     listing = "\n".join(

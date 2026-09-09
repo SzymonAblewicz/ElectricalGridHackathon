@@ -1,3 +1,6 @@
 .venv/
 .vscode/
 __pycache__/
+
+# personal scraper runners — parameters live here, so they stay untracked
+team6/Oleksandr/run_*.py
