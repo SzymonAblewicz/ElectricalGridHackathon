@@ -1,16 +1,23 @@
 # results
 
-Everything produced by `ptdf_all.py` (in `team6/Szymon/`). Eight CSVs in four
-folders, ~38 MB. Each folder has its own README.
+Nine CSVs in four folders (~41 MB), plus two interactive viewers and nine plots
+in `sensitivity/`. Each folder has its own README.
+
+**Start with
+[`sensitivity/viewers/ptdf_viewer_withOverlaps.html`](sensitivity/viewers/ptdf_viewer_withOverlaps.html)**
+— open it in a browser. The whole 980 × 157 matrix, sortable and filterable,
+plus live overlap scoring with an adjustable threshold. No server, no internet.
 
 Regenerate all of it with:
 
 ```
-python ptdf_all.py --full
+python ptdf_all.py --full     # the CSVs                    (~90 s)
+python explore_ptdf.py        # viewers + figures 01-03
+python overlap.py             # figures 04-09 + node_scores.csv
 ```
 
-Takes about 90 seconds — one 754×754 pseudoinverse, then a 168-hour dispatch
-optimisation with HiGHS.
+All three live in `team6/Szymon/`. The first step is the slow one — a 754×754
+pseudoinverse, then a 168-hour dispatch optimisation with HiGHS.
 
 ---
 
@@ -19,8 +26,8 @@ optimisation with HiGHS.
 | folder | files | what it holds |
 |---|---|---|
 | [`network/`](network/) | 2 | the grid itself — one row per node, one per edge |
-| [`ptdf/`](ptdf/) | 2 | the sensitivity matrices. **Snapshot-independent** |
-| [`sensitivity/`](sensitivity/) | 1 | the same thing signed, in long format, one row per (edge, wind node) |
+| [`ptdf/`](ptdf/) | 2 | the raw, unsigned matrices. **Snapshot-independent** |
+| [`sensitivity/`](sensitivity/) | 3 + viewers + figures | signed along real flow — **this is where the analysis lives** |
 | [`timeseries/`](timeseries/) | 3 | flows, loading and flow direction across all 168 hours |
 
 | file | rows | cols | size |
@@ -29,7 +36,9 @@ optimisation with HiGHS.
 | `network/branches.csv` | 980 | 17 | 0.17 MB |
 | `ptdf/ptdf_wind.csv` | 980 | 158 | 3.35 MB |
 | `ptdf/ptdf_full.csv` | 980 | 755 | 16.02 MB |
-| `sensitivity/sensitivity.csv` | 153,860 | 6 | 11.19 MB |
+| `sensitivity/sensitivity_wind.csv` | 980 | 158 | 3.35 MB |
+| `sensitivity/sensitivity_wind_long.csv` | 153,860 | 6 | 11.19 MB |
+| `sensitivity/node_scores.csv` | 157 | 10 | 0.01 MB |
 | `timeseries/flows.csv` | 980 | 169 | 3.22 MB |
 | `timeseries/loading.csv` | 980 | 169 | 3.34 MB |
 | `timeseries/signs.csv` | 980 | 169 | 0.43 MB |
@@ -68,6 +77,9 @@ Stages 1–4 of `team6/Szymon/shift-factor-ptdf-report.md`:
     f     = PTDF p_eff − B φ                          → timeseries/
     sensitivity = PTDF[e,:] · sign(f[e])              → sensitivity/
 ```
+
+`sensitivity` is what you want for "does curtailing here help"; `ptdf` is what
+you want as a stable network property. They differ by one ± per branch.
 
 **Stages 1–3 are pure network** — topology and reactance only. They are the same
 for every hour of the year, and they do not change if you swap in different

@@ -1,0 +1,295 @@
+<title>Shift Factor Explorer</title>
+<style>
+  :root{
+    --bg:#fcfcfb; --panel:#fff; --ink:#0b0b0b; --soft:#52514e; --muted:#8a8983;
+    --line:#e2e1dd; --accent:#2a78d6; --warn:#d03b3b; --ok:#1baf7a;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  :root:not([data-theme="light"]){}
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#151514; --panel:#1d1d1c; --ink:#f2f1ee; --soft:#b6b4ae; --muted:#807e78;
+      --line:#33322f; --accent:#5f9ae8; --warn:#e46a6a; --ok:#3ecb9a;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#151514; --panel:#1d1d1c; --ink:#f2f1ee; --soft:#b6b4ae; --muted:#807e78;
+    --line:#33322f; --accent:#5f9ae8; --warn:#e46a6a; --ok:#3ecb9a;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:22px 24px 60px}
+  h1{font-size:20px;margin:0 0 4px;font-weight:650;letter-spacing:-.01em}
+  .sub{color:var(--soft);font-size:12.5px;margin:0 0 18px;max-width:78ch}
+  .bar{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;
+       background:var(--panel);border:1px solid var(--line);border-radius:10px;
+       padding:12px 14px;margin-bottom:14px}
+  .f{display:flex;flex-direction:column;gap:4px}
+  .f label{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+  select,input[type=text],input[type=number]{
+    background:var(--bg);color:var(--ink);border:1px solid var(--line);
+    border-radius:6px;padding:6px 8px;font:13px/1.2 inherit;min-width:120px}
+  input[type=text]{min-width:180px}
+  .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+  .seg button{background:var(--bg);color:var(--soft);border:0;padding:6px 11px;
+    font:12.5px/1.2 inherit;cursor:pointer;white-space:nowrap}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
+  .note{color:var(--muted);font-size:11.5px;margin:-4px 0 12px}
+  .wrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        overflow:auto;max-height:70vh}
+  table{border-collapse:collapse;width:100%;font-size:12.5px}
+  th,td{padding:5px 10px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
+  th{position:sticky;top:0;background:var(--panel);z-index:2;font-weight:600;
+     font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
+     cursor:pointer;user-select:none}
+  th:hover{color:var(--ink)}
+  th.s::after{content:" ▾";color:var(--accent)}
+  th.s.asc::after{content:" ▴"}
+  td.l,th.l{text-align:left}
+  td.k{font-family:var(--mono);font-size:11.5px}
+  td.v{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  tbody tr:hover{background:color-mix(in srgb,var(--accent) 8%,transparent)}
+  .pill{display:inline-block;padding:1px 6px;border-radius:20px;font-size:10.5px;
+        font-family:var(--mono);background:var(--line);color:var(--soft)}
+  .pill.c{background:color-mix(in srgb,var(--warn) 22%,transparent);color:var(--warn)}
+  .stat{color:var(--soft);font-size:12px;margin:10px 2px 0}
+  .stat b{color:var(--ink);font-weight:600}
+  .flip{color:var(--warn);font-family:var(--mono)}
+  .keep{color:var(--muted);font-family:var(--mono)}
+  .legend{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin:8px 2px 0;
+          font-size:11.5px;color:var(--muted)}
+  .sw{display:inline-block;width:26px;height:11px;border-radius:2px;vertical-align:-1px;margin-right:5px}
+</style>
+
+<h1>Shift Factor Explorer</h1>
+<p class="sub">Every branch against every wind node, from
+<code>results/ptdf/ptdf_wind.csv</code>. Showing <b>sensitivity</b> by default —
+PTDF re-pointed along each branch's real flow, so <b>positive means curtailing
+there unloads the branch</b>. Switch to raw PTDF to see the values on the
+arbitrary <code>bus0→bus1</code> axis they are stored on.</p>
+
+<div class="bar">
+  <div class="f"><label>value</label>
+    <div class="seg" id="mode">
+      <button data-v="sens" aria-pressed="true">Sensitivity</button>
+      <button data-v="raw" aria-pressed="false">Raw PTDF</button>
+    </div>
+  </div>
+  <div class="f"><label>orientation</label>
+    <div class="seg" id="orient">
+      <button data-v="branch" aria-pressed="true">Branch → nodes</button>
+      <button data-v="node" aria-pressed="false">Node → branches</button>
+    </div>
+  </div>
+  <div class="f"><label id="pickLabel">branch</label>
+    <select id="pick"></select>
+  </div>
+  <div class="f"><label>branch filter</label>
+    <select id="scope">
+      <option value="cong">congested only (10)</option>
+      <option value="busy">ever above 80% loaded</option>
+      <option value="all" selected>all 980</option>
+    </select>
+  </div>
+  <div class="f"><label>sort</label>
+    <select id="sort">
+      <option value="abs">|value|, high → low</option>
+      <option value="desc">value, high → low</option>
+      <option value="asc">value, low → high</option>
+      <option value="name">name</option>
+      <option value="mw">wind MW, high → low</option>
+    </select>
+  </div>
+  <div class="f"><label>min |value|</label>
+    <input type="number" id="thr" value="0" min="0" max="1" step="0.01">
+  </div>
+  <div class="f"><label>sign</label>
+    <select id="sgn">
+      <option value="any" selected>both</option>
+      <option value="pos">positive — relieves</option>
+      <option value="neg">negative — worsens</option>
+    </select>
+  </div>
+  <div class="f"><label>search</label>
+    <input type="text" id="q" placeholder="station or id">
+  </div>
+</div>
+
+<div class="note" id="ctx"></div>
+<div class="wrap"><table><thead id="head"></thead><tbody id="body"></tbody></table></div>
+<p class="stat" id="stat"></p>
+<div class="legend">
+  <span><span class="sw" style="background:linear-gradient(90deg,#8f1f1f,#f0efec,#0d366b)"></span>
+    negative (worsens) → 0 → positive (relieves)</span>
+  <span><span class="pill c">C</span> congested at least one hour</span>
+  <span class="flip">↺ flow direction reversed on this branch (sign = −1)</span>
+</div>
+
+<script>
+const D = /*__DATA__*/null;
+
+const $ = id => document.getElementById(id);
+const state = {mode:"sens", orient:"branch", pick:0, scope:"all",
+               sort:"abs", thr:0, sgn:"any", q:"", sortCol:null, asc:false};
+
+/* branch index sets */
+const congIdx = D.branches.map((_,i)=>i).filter(i=>D.hours[i]>0);
+const busyIdx = D.branches.map((_,i)=>i).filter(i=>D.maxload[i]>=80);
+function scopeIdx(){
+  return state.scope==="cong" ? congIdx : state.scope==="busy" ? busyIdx
+       : D.branches.map((_,i)=>i);
+}
+function val(bi,ni){
+  const v = D.values[bi][ni];
+  if(v===null) return null;
+  return state.mode==="sens" ? v*D.sign[bi] : v;
+}
+/* colour: diverging, reversed so positive (relief) is blue */
+function colour(v,lim){
+  if(v===null) return "transparent";
+  const t = Math.max(-1,Math.min(1,v/(lim||1e-9)));
+  const a = Math.min(0.92, Math.abs(t)*0.95);
+  return t>=0 ? `rgba(37,106,191,${a})` : `rgba(208,59,59,${a})`;
+}
+const fmt = v => v===null ? "—" : (v>=0?" ":"−")+Math.abs(v).toFixed(4);
+
+function fillPick(){
+  const sel=$("pick"), byBranch = state.orient==="branch";
+  $("pickLabel").textContent = byBranch ? "branch" : "wind node";
+  sel.innerHTML="";
+  const list = byBranch
+    ? scopeIdx().map(i=>[i, `${D.branches[i]}  ·  ${D.kind[i]}  ·  ${D.s_nom[i].toFixed(0)} MVA`
+        + (D.hours[i]>0?`  ·  ${D.hours[i]} h at rating`:"")])
+    : D.nodes.map((n,i)=>[i, `${D.station[i]}  ·  ${n}  ·  ${D.windMW[i].toFixed(0)} MW`]);
+  if(byBranch) list.sort((a,b)=>D.hours[b[0]]-D.hours[a[0]] || a[1].localeCompare(b[1]));
+  else list.sort((a,b)=>D.windMW[b[0]]-D.windMW[a[0]]);
+  for(const [i,t] of list){
+    const o=document.createElement("option"); o.value=i; o.textContent=t; sel.append(o);
+  }
+  state.pick = list.length ? list[0][0] : 0;
+  sel.value = state.pick;
+}
+
+function rows(){
+  const byBranch = state.orient==="branch";
+  const out=[];
+  if(byBranch){
+    const bi=state.pick;
+    for(let ni=0;ni<D.nodes.length;ni++){
+      const v=val(bi,ni); if(v===null) continue;
+      out.push({key:D.nodes[ni], name:D.station[ni], v,
+                mw:D.windMW[ni], farms:D.farms[ni], kv:D.kV[ni], i:ni});
+    }
+  }else{
+    const ni=state.pick;
+    for(const bi of scopeIdx()){
+      const v=val(bi,ni); if(v===null) continue;
+      out.push({key:D.branches[bi], name:D.branches[bi], v, kind:D.kind[bi],
+                mw:D.s_nom[bi], hours:D.hours[bi], load:D.maxload[bi],
+                sign:D.sign[bi], i:bi});
+    }
+  }
+  let r = out.filter(o=>Math.abs(o.v)>=state.thr);
+  if(state.sgn==="pos") r=r.filter(o=>o.v>0);
+  if(state.sgn==="neg") r=r.filter(o=>o.v<0);
+  if(state.q){
+    const q=state.q.toLowerCase();
+    r=r.filter(o=>(o.key+" "+o.name).toLowerCase().includes(q));
+  }
+  const s=state.sort;
+  if(state.sortCol){
+    const c=state.sortCol, m=state.asc?1:-1;
+    r.sort((a,b)=>{
+      const x=a[c], y=b[c];
+      return (typeof x==="string" ? x.localeCompare(y) : x-y)*m;
+    });
+  } else if(s==="abs") r.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
+  else if(s==="desc") r.sort((a,b)=>b.v-a.v);
+  else if(s==="asc")  r.sort((a,b)=>a.v-b.v);
+  else if(s==="mw")   r.sort((a,b)=>b.mw-a.mw);
+  else r.sort((a,b)=>a.name.localeCompare(b.name));
+  return r;
+}
+
+function render(){
+  const byBranch=state.orient==="branch";
+  const r=rows();
+  const lim = r.length ? Math.max(...r.map(o=>Math.abs(o.v)))||1e-9 : 1;
+
+  const cols = byBranch
+    ? [["name","station",1],["key","bus",1],["kv","kV",0],
+       ["farms","farms",0],["mw","wind MW",0],["v","sensitivity",0]]
+    : [["name","branch",1],["kind","type",1],["mw","rating MVA",0],
+       ["load","max load %",0],["hours","h at rating",0],["v","sensitivity",0]];
+  if(state.mode==="raw") cols[cols.length-1][1]="raw PTDF";
+
+  $("head").innerHTML = "<tr>"+cols.map(([c,t,left])=>
+    `<th data-c="${c}" class="${left?"l ":""}${state.sortCol===c?"s "+(state.asc?"asc":""):""}">${t}</th>`
+  ).join("")+"</tr>";
+
+  $("body").innerHTML = r.map(o=>{
+    const cells = cols.map(([c,,left])=>{
+      if(c==="v") return `<td class="v" style="background:${colour(o.v,lim)}">${fmt(o.v)}</td>`;
+      if(c==="key") return `<td class="k">${o.key}</td>`;
+      if(c==="name" && !byBranch){
+        const flip = o.sign<0 ? ` <span class="flip" title="flow runs bus1→bus0, so the sign is inverted">↺</span>` : "";
+        const c2 = o.hours>0 ? ` <span class="pill c">C</span>` : "";
+        return `<td class="l k">${o.name}${flip}${c2}</td>`;
+      }
+      if(c==="name") return `<td class="l">${o.name}</td>`;
+      if(c==="kind") return `<td class="l">${o[c]==="L"?"line":"transformer"}</td>`;
+      const x=o[c];
+      return `<td>${x===undefined?"—":(typeof x==="number"?(c==="load"?x.toFixed(1):(Number.isInteger(x)?x:x.toFixed(1))):x)}</td>`;
+    }).join("");
+    return `<tr>${cells}</tr>`;
+  }).join("");
+
+  const pos=r.filter(o=>o.v>0).length, neg=r.length-pos;
+  const g5=r.filter(o=>Math.abs(o.v)>=0.05).length;
+  $("stat").innerHTML = `<b>${r.length}</b> rows shown · <b>${pos}</b> positive `
+    + `(curtailing relieves) · <b>${neg}</b> negative (worsens) · `
+    + `<b>${g5}</b> at or above 0.05`;
+
+  if(byBranch){
+    const b=state.pick;
+    $("ctx").textContent = `${D.branches[b]} — ${D.kind[b]==="L"?"line":"transformer"}, `
+      + `${D.s_nom[b].toFixed(0)} MVA, peak loading ${D.maxload[b].toFixed(1)}%, `
+      + `${D.hours[b]} of 168 hours at its rating. Flow sign ${D.sign[b]>0?"+1":"−1"}`
+      + `${D.sign[b]<0?" — the stored bus0→bus1 axis runs against the real flow, so raw PTDF is inverted here.":"."}`;
+  }else{
+    const n=state.pick;
+    $("ctx").textContent = `${D.station[n]} (bus ${D.nodes[n]}) — ${D.kV[n].toFixed(0)} kV, `
+      + `${D.farms[n]} wind farm${D.farms[n]===1?"":"s"}, ${D.windMW[n].toFixed(1)} MW installed. `
+      + `Every branch's sensitivity to curtailing here.`;
+  }
+}
+
+for(const id of ["mode","orient"]){
+  $(id).addEventListener("click", e=>{
+    const b=e.target.closest("button"); if(!b) return;
+    for(const x of $(id).children) x.setAttribute("aria-pressed", x===b);
+    state[id]=b.dataset.v;
+    if(id==="orient"){ state.sortCol=null; fillPick(); }
+    render();
+  });
+}
+$("pick").addEventListener("change", e=>{state.pick=+e.target.value; render();});
+$("scope").addEventListener("change", e=>{
+  state.scope=e.target.value;
+  if(state.orient==="branch") fillPick();
+  render();
+});
+$("sort").addEventListener("change", e=>{state.sort=e.target.value; state.sortCol=null; render();});
+$("thr").addEventListener("input", e=>{state.thr=+e.target.value||0; render();});
+$("sgn").addEventListener("change", e=>{state.sgn=e.target.value; render();});
+$("q").addEventListener("input", e=>{state.q=e.target.value.trim(); render();});
+$("head").addEventListener("click", e=>{
+  const th=e.target.closest("th"); if(!th) return;
+  const c=th.dataset.c;
+  if(state.sortCol===c) state.asc=!state.asc; else {state.sortCol=c; state.asc=false;}
+  render();
+});
+
+fillPick();
+render();
+</script>

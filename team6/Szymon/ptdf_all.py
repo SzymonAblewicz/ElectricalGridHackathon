@@ -23,7 +23,8 @@ Writes to ``participant-kit new/results/``:
     timeseries/flows.csv        980 x 168, MW
     timeseries/loading.csv      980 x 168, |flow| / s_nom
     timeseries/signs.csv        980 x 168, +1 / -1
-    sensitivity/sensitivity.csv 153,860 rows, signed at each branch's peak hour
+    sensitivity/sensitivity_wind.csv       980 x 157, PTDF x sign
+    sensitivity/sensitivity_wind_long.csv  153,860 rows, same data long-format
 """
 
 import os
@@ -46,7 +47,8 @@ import gridkit  # noqa: E402
 FOLDERS = {
     "buses.csv": "network", "branches.csv": "network",
     "ptdf_wind.csv": "ptdf", "ptdf_full.csv": "ptdf",
-    "sensitivity.csv": "sensitivity",
+    "sensitivity_wind.csv": "sensitivity",
+    "sensitivity_wind_long.csv": "sensitivity",
     "flows.csv": "timeseries", "loading.csv": "timeseries",
     "signs.csv": "timeseries",
 }
@@ -205,12 +207,19 @@ def main(argv):
         if os.path.exists(stale):
             os.remove(stale)
 
+    # Sensitivity is PTDF re-pointed along each branch's real flow direction.
+    # It carries no information the PTDF and the per-branch sign do not, but it
+    # is the form every downstream question is actually asked in, so it ships
+    # in the same two shapes: a matrix mirroring ptdf_wind, and a long table.
+    sens_wind = ptdf_wind.mul(br_meta["sign"], axis=0)
+    sens_wind.to_csv(out_path("sensitivity_wind.csv"))
+
     long = ptdf_wind.stack().rename("ptdf").reset_index()
     long.columns = ["branch", "bus", "ptdf"]
     long["sensitivity"] = long["ptdf"] * long["branch"].map(br_meta["sign"])
     long["wind_MW"] = long["bus"].map(bus_meta["wind_MW"])
     long["wind_farms"] = long["bus"].map(bus_meta["wind_farms"])
-    long.to_csv(out_path("sensitivity.csv"), index=False)
+    long.to_csv(out_path("sensitivity_wind_long.csv"), index=False)
 
     # ---- report ------------------------------------------------------
     nl = int((br["kind"] == "Line").sum())

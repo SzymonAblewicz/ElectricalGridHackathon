@@ -1,6 +1,6 @@
 # results / ptdf
 
-**Two files. This is the core output — everything else is metadata or downstream.**
+**The raw sensitivity matrices. Pure network — topology and reactance only.**
 
 | file | shape | size |
 |---|---|---|
@@ -10,9 +10,14 @@
 Rows are branches (755 lines + 225 transformers), columns are buses. First
 column is the branch name; the header row is bus IDs.
 
-`ptdf_wind.csv` is `ptdf_full.csv` with only the 157 wind-node columns kept.
-Use it unless you specifically need a non-wind node — same numbers, a fifth the
-size. `ptdf_full.csv` is only written when `ptdf_all.py` is run with `--full`.
+`ptdf_wind.csv` is `ptdf_full.csv` with only the 157 wind-node columns kept —
+same numbers, a fifth the size. `ptdf_full.csv` is written only with
+`python ptdf_all.py --full`; nothing downstream uses it.
+
+> **Looking for the plots and the viewers?** They moved to
+> [`../sensitivity/`](../sensitivity/). Everything worth *looking* at is signed
+> along real flow, and that is what the sensitivity folder holds. This folder is
+> the unsigned source they are built from.
 
 ---
 
