@@ -1,3 +1,9 @@
+# Change the parameters ONLY in run_something.py
+If you only running the code and want to change any parameter, run it in run_something.py with ready template.
+This is needed to make sure that the logic code changes will not be changed unintentionally and so merging confict apears.
+
+IF the files was accidently changed and merging confict apears, delete the file and pull it from the repo, then push.
+
 # scape_sem_o.py
 THis is a data scraper for the SEM-O datasource. Currently it outputs the daily results for the past 90 days period.
 The report name is displayed in the link of report's page. For example for report "https://www.sem-o.com/market-data/dynamic-reports#BM-086" the report title is "BM-086".
