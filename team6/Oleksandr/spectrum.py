@@ -61,7 +61,7 @@ from scipy.sparse.linalg import eigsh
 matplotlib.use("Agg")  # written to a file, never shown
 import matplotlib.pyplot as plt  # noqa: E402  (needs the backend set above)
 
-import get_weighted_graph as gwg  # noqa: E402
+import graph_lib as gwg  # noqa: E402
 
 
 # ---- what to run ---- #

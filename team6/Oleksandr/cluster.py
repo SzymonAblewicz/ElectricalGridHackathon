@@ -53,7 +53,7 @@ matplotlib.use("Agg")  # written to a file, never shown
 import matplotlib.pyplot as plt  # noqa: E402  (needs the backend set above)
 from matplotlib.collections import LineCollection  # noqa: E402
 
-import get_weighted_graph as gwg  # noqa: E402
+import graph_lib as gwg  # noqa: E402
 
 
 # ---- what to run ---- #
@@ -163,6 +163,10 @@ def plot(
     two want different colours, a legend and a different second panel. Corridors
     are drawn flat grey here so that the colour in the picture is carrying the
     cluster and nothing else.
+
+    Call `gwg.geocode()` on `node_index` before passing it here - this
+    function itself never estimates a missing position, it only draws
+    whatever `x`/`y` it is given.
     """
     x = node_index["x"].to_numpy(float)
     y = node_index["y"].to_numpy(float)
@@ -200,11 +204,15 @@ def plot(
                  for c in range(k)]
         + [plt.Line2D([], [], color="#d1495b", label="corridor between clusters")],
         loc="best", fontsize=9, frameon=False)
-    # Generators carry no coordinate, so they are clustered but never drawn -
-    # counting them in the "geocoded" fraction would only deflate it.
-    drawn = ((node_index["node_type"] == "bus").sum()
-             if "node_type" in node_index else len(node_index))
-    ax.set_title(f"{title}\n{located.sum()}/{drawn} buses geocoded, "
+    # A generator row may or may not carry a coordinate - gwg.geocode() gives
+    # it one, plain node_index never does - but either way it is not a bus,
+    # so it is excluded from both sides of the fraction rather than
+    # inflating the numerator against a bus-only denominator.
+    is_bus = (node_index["node_type"] == "bus").to_numpy() if "node_type" in node_index \
+        else np.ones(len(node_index), dtype=bool)
+    drawn = int(is_bus.sum())
+    bus_located = int((located & is_bus).sum())
+    ax.set_title(f"{title}\n{bus_located}/{drawn} buses placed, "
                  f"{crossing.sum()}/{drawable.sum()} drawn corridors cut")
 
     fig.tight_layout()
@@ -259,8 +267,10 @@ def main() -> None:
     csv_path = out / f"clusters_{EMBEDDING}{tag}_k{K}.csv"
     frame.to_csv(csv_path)
 
+    # Estimated for the plot only, same as get_weighted_graph.py's own
+    # construction graph - the CSV above keeps the real, ungeocoded x/y.
     pdf_path = out / f"clusters_{EMBEDDING}{tag}_k{K}.pdf"
-    plot(A, node_index, labels, pdf_path,
+    plot(A, gwg.geocode(node_index, branches), labels, pdf_path,
          f"{CASE}{' +generators' if GENERATORS else ''} — {EMBEDDING}, k = {K}")
 
     listing = "\n".join(

@@ -44,12 +44,20 @@ from __future__ import annotations
 import time
 from heapq import heappop, heappush
 from math import inf
+from pathlib import Path
 
+import matplotlib
 import numpy as np
+import pandas as pd
 from scipy import sparse
 from scipy.sparse import csgraph
 
-import get_weighted_graph as gwg
+matplotlib.use("Agg")  # written to a file, never shown
+import matplotlib.pyplot as plt  # noqa: E402  (needs the backend set above)
+from matplotlib.collections import LineCollection  # noqa: E402
+from matplotlib.colors import PowerNorm  # noqa: E402
+
+import graph_lib as gwg  # noqa: E402
 
 
 # ---- what to run ---- #
@@ -64,6 +72,7 @@ import get_weighted_graph as gwg
 
 CASE = "TYTFS2024_WP2024_V35_transmission"
 GENERATORS = True    # include the generators as nodes of their own
+COLOUR_GAMMA = 0.4   # map shading: <1 stretches the crowded low end, see plot()
 
 
 # ---- the algorithm ---- #
@@ -162,6 +171,103 @@ def scored(raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return raw * 0.5, normalised
 
 
+# ---- output ---- #
+
+
+def plot(
+    A: sparse.csr_array,
+    node_index: pd.DataFrame,
+    score: np.ndarray,
+    path: Path,
+    title: str,
+    gamma: float = COLOUR_GAMMA,
+) -> None:
+    """The geographic view, every node shaded by its betweenness.
+
+    Adapted from `get_weighted_graph.plot` rather than sharing it, the same way
+    `cluster.py`'s is: that one draws capacity and a sparsity pattern, this one
+    draws a ranking. Corridors go flat grey so the only colour in the picture is
+    the score, and buses stay circles while generators stay triangles, so which
+    node set a marker belongs to is carried by its shape and the colour is left
+    to mean exactly one thing. Brighter is higher throughout.
+
+    The shading is deliberately *not* linear in the score, and that is the one
+    thing to know before reading the picture. Betweenness on a grid is extremely
+    top-heavy - on the WP2024 transmission case 91% of buses sit below a tenth
+    of the maximum - so a linear ramp puts nearly every node inside the darkest
+    few percent of the colormap and produces one bright dot on a black field.
+    `PowerNorm(gamma)` with gamma below 1 stretches that crowded low end while
+    staying strictly monotonic in the score, so a brighter node is still always
+    a higher-scoring node; only the spacing changes, never the order. The
+    colourbar carries the real values at their true positions on that scale, so
+    the compression is on show rather than hidden. Set `COLOUR_GAMMA` to 1 to
+    see the honest linear version.
+
+    Every generator comes out at the very bottom of the scale, and that is
+    arithmetic rather than an artefact: a generator is a degree-1 leaf, no
+    shortest path between two other nodes can route through it, so its
+    betweenness is exactly zero by construction.
+
+    Call `gwg.geocode()` on `node_index` before passing it here - this function
+    never estimates a missing position, it only draws the x/y it is given.
+    """
+    x = node_index["x"].to_numpy(float)
+    y = node_index["y"].to_numpy(float)
+    located = np.isfinite(x) & np.isfinite(y)
+
+    # Upper triangle only: one segment per corridor, not two.
+    upper = sparse.triu(A, k=1).tocoo()
+    drawable = located[upper.row] & located[upper.col]
+    i, j = upper.row[drawable], upper.col[drawable]
+    segments = np.stack([np.c_[x[i], y[i]], np.c_[x[j], y[j]]], axis=1)
+
+    is_bus = (node_index["node_type"] == "bus").to_numpy() if "node_type" in node_index \
+        else np.ones(len(node_index), dtype=bool)
+    bus_drawn = located & is_bus
+    gen_drawn = located & ~is_bus
+
+    # An all-zero score would make vmax 0 and the norm degenerate; 1.0 keeps the
+    # colourbar meaningful and every marker at the bottom, which is the truth.
+    norm = PowerNorm(gamma, vmin=0.0, vmax=float(score.max()) or 1.0)
+
+    fig, ax = plt.subplots(figsize=(8.5, 9))
+    ax.add_collection(LineCollection(
+        segments, linewidths=0.5, colors="#b8bec9", alpha=0.8, zorder=1))
+
+    # A thin dark edge stops the brightest markers - the whole point of the
+    # picture - from washing out against the white page.
+    edge = dict(edgecolors="#333333", linewidths=0.25)
+    dots = ax.scatter(x[bus_drawn], y[bus_drawn], s=26, c=score[bus_drawn],
+                      cmap="viridis", norm=norm, marker="o", zorder=3, **edge)
+    handles = [plt.Line2D([], [], marker="o", linestyle="", color="#5b6472",
+                          label=f"bus — {int(bus_drawn.sum())} drawn")]
+    if gen_drawn.any():
+        ax.scatter(x[gen_drawn], y[gen_drawn], s=24, c=score[gen_drawn],
+                   cmap="viridis", norm=norm, marker="^", zorder=2, **edge)
+        handles.append(plt.Line2D([], [], marker="^", linestyle="", color="#5b6472",
+                                  label=f"generator — {int(gen_drawn.sum())} drawn, "
+                                        "all exactly 0"))
+    ax.legend(handles=handles, loc="best", fontsize=9, frameon=False)
+
+    bar = fig.colorbar(dots, ax=ax, fraction=0.035, pad=0.02)
+    bar.set_label("normalised betweenness")
+
+    ax.set_aspect(1 / np.cos(np.deg2rad(np.nanmean(y))))  # rough WGS84 fix
+    ax.autoscale_view()
+    ax.set_xlabel("longitude")
+    ax.set_ylabel("latitude")
+
+    buses = int(is_bus.sum())
+    ax.set_title(
+        f"{title}\n{int(bus_drawn.sum())}/{buses} buses placed, "
+        f"{drawable.sum()}/{upper.nnz} corridors drawn — "
+        f"colour ∝ score^{gamma:g}, not linear")
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
 # ---- entry point ---- #
 
 
@@ -191,6 +297,16 @@ def main() -> None:
     path = out / f"betweenness{tag}.csv"
     frame.to_csv(path)
 
+    # geocode() fills in the positions the plot needs - imputed for a bus with
+    # no x/y, jittered beside its bus for a generator - and returns a copy, so
+    # the CSV written above keeps the real ungeocoded coordinates. `normalised`
+    # is still in node_index row order here; `frame` above was sorted by rank,
+    # which is why the scores are passed straight rather than off the frame.
+    plot_index = gwg.geocode(node_index, branches)
+    graph_path = out / f"graph_betweenness{tag}.pdf"
+    plot(A, plot_index, normalised, graph_path,
+         f"{CASE}{' +generators' if GENERATORS else ''} — betweenness on 1/capacity")
+
     label = "station" if "station" in frame else "name"
     top = frame.head(10)
     listing = "\n".join(
@@ -205,7 +321,8 @@ def main() -> None:
         f"  edges      {W.nnz // 2}\n"
         f"  computed   exact Brandes in {elapsed:.1f}s\n"
         f"  top nodes  by normalised betweenness\n{listing}\n"
-        f"  wrote      {path}"
+        f"  wrote      {path}\n"
+        f"             {graph_path}"
     )
 
 
