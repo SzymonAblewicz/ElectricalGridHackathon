@@ -116,7 +116,7 @@ no voltage-stability representation at all --- several real EirGrid constraint
 groups exist for exactly that reason and are outside anything computed here.
 
 \newpage
-\section{Stage 1 --- build $K$, $B$, $\varphi$, $L$}
+\section{Stage 1 --- build \texorpdfstring{$K$, $B$, $\varphi$, $L$}{K, B, phi, L}}
 
 \subsection*{$K$, the bus--branch incidence matrix \quad $\gnb \times \gne$}
 
@@ -253,7 +253,7 @@ $p = e_n - \tfrac{1}{N}\mathbf{1}$. Since $\Lp\mathbf{1} = \mathbf{0}$,
   \Lp p = \Lp e_n - \tfrac{1}{N}\Lp\mathbf{1} = \Lp e_n .
 \end{equation}
 So reading column $n$ of $\Lp$ \emph{is} injecting at $n$ against a uniform
-distributed slack. \qed
+distributed slack. \qed{}
 
 \newpage
 \subsection*{$\Lp$ --- the whole thing, and why it is expensive}
@@ -302,7 +302,7 @@ law. Pre-multiplying them means the network is never solved again.
   balancing withdrawal spread uniformly.
   \end{minipage}
 \]
-Dimensionless --- MW per MW. Here it spans $[\gptdfmin, \gptdfmax]$.
+Dimensionless --- MW per MW\@. Here it spans $[\gptdfmin, \gptdfmax]$.
 \textbf{It is the exact analytic derivative of the model, not a
 finite-difference estimate}; every one of the $\gnPtdfEntries$ entries falls out
 of the single inversion in Stage 2.
@@ -481,9 +481,9 @@ $n$ is an injection change of $-r$, so the flow-aligned quantity changes by
 $-Sr$:
 \begin{itemize}\itemsep0pt
   \item $S>0$: change is negative, flow shrinks along its own direction,
-        magnitude falls --- \textbf{congestion relieved}. \checkmark
+        magnitude falls --- \textbf{congestion relieved}. \checkmark{}
   \item $S<0$: flow grows along its own direction, magnitude rises ---
-        \textbf{congestion worsened}. \checkmark
+        \textbf{congestion worsened}. \checkmark{}
 \end{itemize}
 
 \subsection*{Flows and signs --- real values at \texttt{\gsnap}}
