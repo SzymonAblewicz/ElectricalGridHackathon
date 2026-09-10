@@ -39,6 +39,12 @@ OUT_DIR = FOLDER / "data" / "graphs"
 CASE = "TYTFS2024_SV2024_V35_transmission"
 
 
+def voltage_group_counts(voltage_groups: pd.Series) -> pd.Series:
+    """Buses per voltage group, ordered by how many voltages they span."""
+    counts = voltage_groups.value_counts()
+    return counts.reindex(sorted(counts.index, key=lambda g: (g.count("+"), g)))
+
+
 def main() -> None:
     case_dir = PYPSA_DIR / CASE
     buses = pd.read_csv(case_dir / "buses.csv", dtype={"name": str})
@@ -65,10 +71,18 @@ def main() -> None:
         neighbour_voltage.groupby("bus")["neighbour_v"]
         .apply(lambda vs: "+".join(f"{v:g}" for v in sorted(set(vs))))
     )
-    per_group = voltage_groups.value_counts()
-    per_group = per_group.reindex(
-        sorted(per_group.index, key=lambda g: (g.count("+"), g))
-    )
+    per_group = voltage_group_counts(voltage_groups)
+
+    # Same voltage-group breakdown, restricted to buses at or above a given
+    # connection count - printed only, since each is a filtered view of the
+    # third chart above rather than a chart of its own.
+    degree_thresholds = [3, 4]
+    per_group_by_threshold = {
+        min_conn: voltage_group_counts(
+            voltage_groups.reindex(connections[connections >= min_conn].index)
+        )
+        for min_conn in degree_thresholds
+    }
 
     fig, (left, mid, right) = plt.subplots(1, 3, figsize=(17, 5))
 
@@ -100,6 +114,10 @@ def main() -> None:
     print(connections.describe())
     print(per_voltage)
     print(per_group)
+    for min_conn, breakdown in per_group_by_threshold.items():
+        n_buses = (connections >= min_conn).sum()
+        print(f"\nvoltage group breakdown, buses with {min_conn}+ connections ({n_buses} buses):")
+        print(breakdown)
     print(f"wrote {out / 'bus_connections.pdf'}")
 
 

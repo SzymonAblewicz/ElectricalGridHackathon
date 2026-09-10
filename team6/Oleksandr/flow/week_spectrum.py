@@ -243,27 +243,81 @@ def plot_spectrum(series: pd.DataFrame, snaps, path: Path) -> None:
     plt.close(fig)
 
 
-def plot_membership(series: pd.DataFrame, labels: np.ndarray, snaps, path: Path) -> None:
-    """Who sits in which cluster, when.
+def plot_membership(series: pd.DataFrame, labels: np.ndarray, snaps, node_index: pd.DataFrame,
+                    path: Path) -> None:
+    """Who sits in which cluster, when - one cell per node per hour, recoverable by zooming.
 
-    Nodes are ordered by the cluster they hold in the *most robust* hour, so a zone that
-    persists reads as a solid horizontal band and a node that defects reads as a break in
-    one. Ordering by an arbitrary hour instead would scatter every band.
+    **Resolution.** `interpolation="none"` is the setting that matters. With "nearest", as an
+    earlier version used, matplotlib resamples the 1674 x 168 grid to the output dpi before
+    writing the PDF: ~500 pixel rows for 1674 nodes, so three nodes blend into each pixel and
+    a single node's excursion vanishes. With "none" the PDF backends embed the raw array and
+    leave scaling to the viewer, so every node-hour cell survives and zooming in shows it.
+
+    **Row order**, most significant first:
+      1. the cluster held in the *most robust* hour (highest lambda_2) - the bands;
+      2. within a band, how many hours the node spends outside it - loyal nodes on top,
+         restless boundary nodes at the bottom edge of each band;
+      3. the node's whole label sequence - so nodes that move *together* sit together, and a
+         group defection reads as a block rather than as scattered hairlines.
+
+    Each band is fenced by a rule and labelled on the right with its size and where its buses
+    sit (mean lat/lon), so a band can be read as a place, not only as a colour.
     """
+    n_hours, n_nodes = labels.shape
+    k = int(labels.max()) + 1
     reference = int(np.asarray(series["lambda_2"]).argmax())
-    order = np.argsort(labels[reference], kind="stable")
+    band = labels[reference]
+    away = (labels != band[None, :]).sum(axis=0)
+    # np.lexsort sorts on its LAST key first, so the list runs least- to most-significant.
+    order = np.lexsort(tuple(labels[t] for t in range(n_hours - 1, -1, -1)) + (away, band))
+    grid = labels[:, order].T                                    # nodes x hours
 
-    fig, ax = plt.subplots(figsize=(10.0, 4.8))
-    ax.imshow(labels[:, order].T, aspect="auto", interpolation="nearest",
-              cmap="tab10", vmin=0, vmax=9)
-    _day_ticks(ax, snaps)
-    ax.set_ylabel(f"node, ordered by cluster at "
-                  f"{pd.Timestamp(snaps[reference]):%a %H:%M}")
-    ax.set_title(f"{CASE} - {WEIGHTING}: cluster membership, k = {labels.max() + 1}, "
-                 f"aligned hour to hour")
+    height = max(6.0, n_nodes / 140)                             # ~12 in for 1674 nodes
+    fig, ax = plt.subplots(figsize=(15.0, height))
+    cmap = plt.get_cmap("tab10")
+    ax.imshow(grid, aspect="auto", interpolation="none", cmap=cmap, vmin=0, vmax=9)
+
+    # Time axis: a label every six hours, a tick every hour, a rule at every midnight.
+    ax.set_xticks(np.arange(n_hours), minor=True)
+    major = [i for i, s in enumerate(snaps) if pd.Timestamp(s).hour % 6 == 0]
+    ax.set_xticks(major, [pd.Timestamp(snaps[i]).strftime("%a %d\n%H:%M")
+                          if pd.Timestamp(snaps[i]).hour == 0
+                          else pd.Timestamp(snaps[i]).strftime("%H:%M") for i in major],
+                  fontsize=7)
+    for i, s in enumerate(snaps):
+        if pd.Timestamp(s).hour == 0:
+            ax.axvline(i - 0.5, color="white", linewidth=0.8, alpha=0.9)
+    ax.axvline(reference, color="black", linewidth=0.6, linestyle=(0, (2, 2)))
+
+    # Band fences and labels. Coordinates come from the bus rows only - generator rows carry
+    # none - and the kit's 0 N 0 E placeholder is dropped, as graph_lib.placed_buses would.
+    sorted_band = band[order]
+    x = node_index["x"].to_numpy(float)[order]
+    y = node_index["y"].to_numpy(float)[order]
+    placed = np.isfinite(x) & np.isfinite(y) & ~((np.abs(x) < 1e-9) & (np.abs(y) < 1e-9))
+    for c in range(k):
+        rows = np.where(sorted_band == c)[0]
+        if not len(rows):
+            continue
+        top, bottom = rows.min() - 0.5, rows.max() + 0.5
+        ax.axhline(bottom, color="black", linewidth=0.7)
+        where = ""
+        if placed[rows].any():
+            where = (f"\n{np.mean(y[rows][placed[rows]]):.2f}N "
+                     f"{-np.mean(x[rows][placed[rows]]):.2f}W")
+        ax.text(n_hours - 0.5 + 1.2, (top + bottom) / 2,
+                f"cluster {c}\n{len(rows)} nodes{where}",
+                va="center", ha="left", fontsize=7, color=cmap(c), fontweight="bold",
+                clip_on=False)
+
+    ax.set_ylabel(f"node - grouped by cluster at {pd.Timestamp(snaps[reference]):%a %H:%M} "
+                  f"(dashed), loyal nodes first within each group")
+    ax.set_title(f"{CASE} - {WEIGHTING}: cluster membership, k = {k}, aligned hour to hour"
+                 f"   (zoom in: one cell per node per hour)")
     ax.grid(False)
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
+    fig.subplots_adjust(right=0.90)                              # room for the band labels
+    fig.savefig(path, dpi=200)
     plt.close(fig)
 
 
@@ -367,7 +421,7 @@ def main() -> None:
              case=np.array(CASE), weighting=np.array(WEIGHTING),
              embedding=np.array(EMBEDDING), k=np.array(K))
     plot_spectrum(series, snaps, out / f"lambda2_{stem}.pdf")
-    plot_membership(series, labels, snaps, out / f"membership_{stem}_k{K}.pdf")
+    plot_membership(series, labels, snaps, node_index, out / f"membership_{stem}_k{K}.pdf")
 
     elapsed = time.perf_counter() - started
     l2 = series["lambda_2"]
