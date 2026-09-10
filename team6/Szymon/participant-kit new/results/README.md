@@ -1,6 +1,6 @@
 # results
 
-Nine CSVs in four folders (~41 MB), plus two interactive viewers and nine plots
+Ten CSVs in four folders (~45 MB), plus two interactive viewers and nine plots
 in `sensitivity/`. Each folder has its own README.
 
 **Start with
@@ -38,7 +38,7 @@ pseudoinverse, then a 168-hour dispatch optimisation with HiGHS.
 | `ptdf/ptdf_full.csv` | 980 | 755 | 16.02 MB |
 | `sensitivity/sensitivity_wind.csv` | 980 | 158 | 3.35 MB |
 | `sensitivity/sensitivity_wind_long.csv` | 153,860 | 6 | 11.19 MB |
-| `sensitivity/node_scores.csv` | 157 | 10 | 0.01 MB |
+| `sensitivity/node_scores.csv` | 157 | 11 | 0.01 MB |
 | `timeseries/flows.csv` | 980 | 169 | 3.22 MB |
 | `timeseries/loading.csv` | 980 | 169 | 3.34 MB |
 | `timeseries/signs.csv` | 980 | 169 | 0.43 MB |
