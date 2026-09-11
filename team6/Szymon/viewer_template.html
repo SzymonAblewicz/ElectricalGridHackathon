@@ -62,11 +62,6 @@
 </style>
 
 <h1>Shift Factor Explorer</h1>
-<p class="sub">Every branch against every wind node, from
-<code>results/ptdf/ptdf_wind.csv</code>. Showing <b>sensitivity</b> by default —
-PTDF re-pointed along each branch's real flow, so <b>positive means curtailing
-there unloads the branch</b>. Switch to raw PTDF to see the values on the
-arbitrary <code>bus0→bus1</code> axis they are stored on.</p>
 
 <div class="bar">
   <div class="f"><label>value</label>
@@ -106,8 +101,8 @@ arbitrary <code>bus0→bus1</code> axis they are stored on.</p>
   <div class="f"><label>sign</label>
     <select id="sgn">
       <option value="any" selected>both</option>
-      <option value="pos">positive — relieves</option>
-      <option value="neg">negative — worsens</option>
+      <option value="pos">positive: relieves</option>
+      <option value="neg">negative: worsens</option>
     </select>
   </div>
   <div class="f"><label>search</label>
@@ -151,7 +146,7 @@ function colour(v,lim){
   const a = Math.min(0.92, Math.abs(t)*0.95);
   return t>=0 ? `rgba(37,106,191,${a})` : `rgba(208,59,59,${a})`;
 }
-const fmt = v => v===null ? "—" : (v>=0?" ":"−")+Math.abs(v).toFixed(4);
+const fmt = v => v===null ? "-" : (v>=0?" ":"−")+Math.abs(v).toFixed(4);
 
 function fillPick(){
   const sel=$("pick"), byBranch = state.orient==="branch";
@@ -239,7 +234,7 @@ function render(){
       if(c==="name") return `<td class="l">${o.name}</td>`;
       if(c==="kind") return `<td class="l">${o[c]==="L"?"line":"transformer"}</td>`;
       const x=o[c];
-      return `<td>${x===undefined?"—":(typeof x==="number"?(c==="load"?x.toFixed(1):(Number.isInteger(x)?x:x.toFixed(1))):x)}</td>`;
+      return `<td>${x===undefined?"-":(typeof x==="number"?(c==="load"?x.toFixed(1):(Number.isInteger(x)?x:x.toFixed(1))):x)}</td>`;
     }).join("");
     return `<tr>${cells}</tr>`;
   }).join("");
@@ -252,13 +247,13 @@ function render(){
 
   if(byBranch){
     const b=state.pick;
-    $("ctx").textContent = `${D.branches[b]} — ${D.kind[b]==="L"?"line":"transformer"}, `
+    $("ctx").textContent = `${D.branches[b]}: ${D.kind[b]==="L"?"line":"transformer"}, `
       + `${D.s_nom[b].toFixed(0)} MVA, peak loading ${D.maxload[b].toFixed(1)}%, `
       + `${D.hours[b]} of 168 hours at its rating. Flow sign ${D.sign[b]>0?"+1":"−1"}`
-      + `${D.sign[b]<0?" — the stored bus0→bus1 axis runs against the real flow, so raw PTDF is inverted here.":"."}`;
+      + `${D.sign[b]<0?". The stored bus0→bus1 axis runs against the real flow, so raw PTDF is inverted here.":"."}`;
   }else{
     const n=state.pick;
-    $("ctx").textContent = `${D.station[n]} (bus ${D.nodes[n]}) — ${D.kV[n].toFixed(0)} kV, `
+    $("ctx").textContent = `${D.station[n]} (bus ${D.nodes[n]}), ${D.kV[n].toFixed(0)} kV, `
       + `${D.farms[n]} wind farm${D.farms[n]===1?"":"s"}, ${D.windMW[n].toFixed(1)} MW installed. `
       + `Every branch's sensitivity to curtailing here.`;
   }

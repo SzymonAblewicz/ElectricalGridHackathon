@@ -7,6 +7,7 @@
 \usepackage{array}
 \usepackage{xcolor}
 \usepackage{microtype}
+\usepackage{pdfpages}
 \usepackage[colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black]{hyperref}
 
 \definecolor{ink}{HTML}{0B0B0B}
@@ -19,491 +20,143 @@
 \newcommand{\note}[1]{{\color{soft}\small #1}}
 
 \input{generated/macros}
-\input{generated/dump_flag}
 \input{generated/protocol_macros}
 
-\title{\textbf{Shift Factors on the Irish Transmission Grid}\\[2mm]
-\large The DC pipeline in full: $K$, $B$, $L$, $\Lp$, PTDF, sensitivity}
-\author{Szymon Ablewicz \quad---\quad Team 6, Electrical Grid Hackathon 2026}
-\date{Network: \texttt{WP2033\_all-island} \quad
-      $\gnb$ buses, $\gne$ branches, $\gnwind$ wind nodes}
+\pagestyle{empty}
 
 \begin{document}
-\maketitle
 
-\begin{abstract}
-\noindent
-Every matrix in this document is from the real all-island network:
-$\gnb$ buses, $\gne$ branches ($\gnlines$ lines and $\gntx$ transformers),
-$\gnwindgen$ wind farms at $\gnwind$ buses. Nothing here is a reduced example.
+% ---- title ---------------------------------------------------
+\thispagestyle{empty}
+\vspace*{\fill}
+\begin{center}
+{\LARGE\bfseries Tackling the problem of constraint group construction\\[3mm]
+to reduce wind energy waste and defend against cascading outages}
 
-The pipeline computes, for every transmission branch $e$ and every wind node
-$n$, how much the flow on $e$ changes per MW curtailed at $n$ --- the quantity
-EirGrid calls a \emph{shift factor}. The result is a
-$\gne \times \gnb$ matrix of $\gnPtdfEntries$ entries, exact to the DC model
-rather than estimated.
-
-\medskip\noindent
-\textbf{On displaying the matrices.} $\Lp$ alone holds $\gnLpEntries$ entries
-and is $\gLpdense\%$ dense. \TeX{} cannot typeset a $\gne$-column array --- it
-exhausts its column registers long before it runs out of paper. So each matrix
-appears twice: as a \emph{heatmap of the whole thing}, every entry present as
-a pixel; and as a \emph{labelled numeric window} carrying real values at real
-buses. Appendix~\ref{app:dump} holds the complete entry-by-entry dumps.
-\end{abstract}
-
-\vspace{2mm}
-\begin{center}\small
-\begin{tabular}{llll}
-\toprule
-\textbf{check} & \textbf{value} & \textbf{must be} & \textbf{meaning}\\
-\midrule
-flows vs.\ PyPSA \texttt{n.lpf()} & $\gresid$ MW & $\approx 0$ & an independent DC solver agrees\\
-PTDF row sums & $\growsum$ & $0$ & 1\,MW at every bus at once moves nothing\\
-$\|L\mathbf{1}\|_\infty$ & $\gLone$ & $0$ & the constant vector is in the nullspace\\
-$\mathbf{1}\T p$ & $\gpsum$ & $0$ & injections balance\\
-$\mathbf{1}\T p_{\text{eff}}$ & $\gpeffsum$ & $0$ & the phase-shift term preserves that\\
-\bottomrule
-\end{tabular}
+\vspace{10mm}
+{\large Team 6}
 \end{center}
-
+\vspace*{\fill}
 \newpage
-\section{The model: DC power flow}
 
-The AC power-flow equations are nonlinear. The DC approximation linearises them
-under three assumptions:
-\begin{enumerate}\itemsep0pt
-  \item every bus voltage magnitude is held at $1$ per unit;
-  \item branch resistance is negligible beside reactance, $r \ll x$, so losses vanish;
-  \item angle differences across branches are small, so $\sin(\theta_i-\theta_j)\approx\theta_i-\theta_j$.
-\end{enumerate}
+% ---- teammate slides, shown first ----------------------------
+\includepdf[pages=-,fitpaper=true]{figures/vilmos.pdf}
 
-Active power flow on a branch then becomes exactly linear in the angle difference:
+% ===============================================================
+\section{The shift factor, as it is used today}
+
+For a branch $e$ and a generator at node $n$:
 \begin{equation}
-  f_e \;=\; \frac{\theta_{i(e)} - \theta_{j(e)}}{x_e}
-       \;=\; b_e\,(\theta_{i} - \theta_{j}),
-  \qquad b_e \equiv 1/x_e .
+  \text{SF}_{e,n} \;=\; \frac{\Delta f_e}{\Delta P_n}.
+  \label{eq:sf}
 \end{equation}
 
-\textbf{Why this matters.} Linearity is the whole reason a closed-form
-sensitivity exists. In full AC one would perturb an injection and re-solve a
-nonlinear system once per wind node --- which is what EirGrid's load-flow tool
-does. In DC the derivative is exact, analytic, and available for every
-branch--node pair at once from a single inversion.
+Two properties define how it is used:
 
 \medskip
-\textbf{What it is, in circuit terms.} Under DC the grid is an ordinary
-resistive network and this is plain nodal analysis:
-
-\begin{center}\small
-\begin{tabular}{ll}
-\toprule
-circuit theory & DC power flow\\
-\midrule
-node voltage & bus voltage angle $\theta$\\
-conductance $G = 1/R$ & susceptance $b = 1/x$\\
-injected current source & net power injection $p$ (MW)\\
-nodal conductance matrix $\mathbf{G}$ & $L = K B K\T$\\
-$\mathbf{G}V = I$ (KCL at every node) & $L\theta = p$\\
-Ohm's law on a branch & $f = B K\T \theta$\\
-\bottomrule
-\end{tabular}
-\end{center}
+\textbf{It is transmission-line specific.} One number describes one branch
+against one generator. A constraint group is built by computing a column of
+these for a single congested circuit.
 
 \medskip
-\textbf{What is given up.} No reactive power: real thermal limits are current
-limits and current tracks $|S| = \sqrt{P^2+Q^2}$, while DC sees only $P$. And
-no voltage-stability representation at all --- several real EirGrid constraint
-groups exist for exactly that reason and are outside anything computed here.
+\textbf{It is empirical.} [WDT] (Appendix 2, p.\,71) obtains it by
+perturbation: move one generator by a fixed amount, re-run the load flow, read
+the change in branch current. One solve per number.
 
+% ===============================================================
 \newpage
-\section{Stage 1 --- build \texorpdfstring{$K$, $B$, $\varphi$, $L$}{K, B, phi, L}}
+\section{Sensitivity: a new way of looking at it}
 
-\subsection*{$K$, the bus--branch incidence matrix \quad $\gnb \times \gne$}
+\begin{equation}
+  S_{e,n} \;=\; \text{PTDF}_{e,n}\cdot\operatorname{sign}(f_e).
+  \label{eq:sens}
+\end{equation}
 
-Column $e$ has exactly two non-zeros: $+1$ in the row of the branch's
-\texttt{bus0}, $-1$ in the row of its \texttt{bus1}.
+The same physical quantity as \eqref{eq:sf}, with the sign re-pointed along
+each branch's real direction of flow, so that \textbf{positive always means
+relief}.
+
+\medskip
+Without the correction a positive entry means ``flow increases in the
+branch's stored \texttt{bus0}$\rightarrow$\texttt{bus1} direction'', which is
+overload on one branch and relief on another. With it, one row may be ranked,
+and two rows may be added.
+
+\medskip
+It is \textbf{dimensionless}, MW off the branch per MW curtailed at the
+node, so entries from different branches are directly comparable.
+
+% ===============================================================
+\newpage
+\section{How to get to \texorpdfstring{$S$}{S}: \texorpdfstring{$K$, $B$, $L$}{K, B, L}}
+
+\textbf{$K$, incidence, $\gnb \times \gne$.} Topology only. Column $e$ has
+exactly two non-zeros: $+1$ at the branch's \texttt{bus0}, $-1$ at its
+\texttt{bus1}.
 \[
-  K_{ie} =
-  \begin{cases}
+  K_{ie} = \begin{cases}
     +1 & i = \text{bus0}(e)\\
     -1 & i = \text{bus1}(e)\\
     0  & \text{otherwise.}
   \end{cases}
 \]
-This is topology only --- which buses connect to which --- and carries no
-electrical information. It is $\gKdense\%$ dense.
 
-\textbf{The orientation is arbitrary.} Which end is called \texttt{bus0} was
-decided by row order in the data file. Harmless through Stage 3; Stage 4 exists
-to clean it up.
-
-\begin{center}\includegraphics[width=\linewidth]{figures/m_K}\end{center}
-
-\newpage
-\subsection*{$K$ --- real entries}
-
-$\gwinb$ buses against the $\gwine$ congested branches. Every column shows the
-same $+1/-1$ pair.
-\begin{center}\input{generated/w_K}\end{center}
-
-\subsection*{$B$, the susceptance matrix \quad $\gne \times \gne$ diagonal}
-
-\[ B = \operatorname{diag}(b_1,\dots,b_{\gne}), \qquad b_e = 1/x_e \]
-in MW per radian, ranging from $\gbmin$ to $\gbmax$ across the network. For the
-congested branches:
-\[ B_{\text{cong}} = \input{generated/w_B} \]
-
-\note{PyPSA stores per-unit reactance on a 1\,MVA base, so $1/x_{\text{pu}}$ is
-already in MW/rad --- verified directly: for line \texttt{1021-2121-1},
-$x = 7.634011\,\Omega$ at $110$\,kV gives
-$x_{\text{pu}}\cdot v_{\text{nom}}^2 / x = 1.000$\,MVA exactly.}
-
-\subsection*{$\varphi$, the phase shifts \quad $\gne$ vector, radians}
-
-Zero for every line and every ordinary transformer. Non-zero for exactly
-$\gnshift$ phase-shifting transformers, the larger at $\gshiftdeg^\circ$. A
-shifter imposes an angle of its own, so its flow is
-$f_e = b_e(\theta_i - \theta_j - \varphi_e)$. It does not enter until Stage 4.
-
-\newpage
-\subsection*{$L = K B K\T$, the weighted Laplacian \quad $\gnb \times \gnb$}
-
-\[
-  L_{ij} =
-  \begin{cases}
-    \sum_{e \ni i} b_e & i = j\\
-    -\,b_e & i \neq j,\ \text{branch } e \text{ joins } i,j\\
-    0 & \text{otherwise}
-  \end{cases}
-\]
-
-This is the DC bus admittance matrix. Applying it to the angle vector gives
-\begin{equation}
-  L\theta = p,
-\end{equation}
-which is \textbf{Kirchhoff's Current Law written at every bus at once}: net
-power injected at a bus equals the power flowing out along its branches.
-
-$L$ is $\gLdense\%$ dense --- it inherits the grid's own sparsity, because
-$L_{ij}\neq 0$ only for buses that are physically connected.
-
-\begin{center}\includegraphics[width=\linewidth]{figures/m_L}\end{center}
-
-\newpage
-\subsection*{$L$ --- real entries \quad ($\times 10^{3}$ MW/rad)}
-
-\begin{center}\input{generated/w_L}\end{center}
-
-\note{Diagonal entries sum over \emph{all} branches at that bus, including ones
-leaving this window --- so a diagonal here can exceed the off-diagonals shown.
-That is the one thing a window cannot show, and is why the heatmap above
-accompanies it.}
-
-\subsection*{Scale invariance}
-
-\textbf{Claim.} PTDF is unchanged if every susceptance is multiplied by a
-constant $c$.
-
-\textbf{Proof.} Let $B \to cB$. Then $L \to cL$, and $\Lp \to \Lp/c$ by the
-Moore--Penrose property of scalar multiples, so
-\[
-  \text{PTDF} = (cB)K\T\!\left(\tfrac{1}{c}\Lp\right) = B K\T \Lp . \qquad\blacksquare
-\]
-
-So the PTDF needs no MVA base. \textbf{This does not extend to Stage 4}: there
-$p_{\text{eff}} = p + KB\varphi$ \emph{adds} a $B$-weighted term to a vector in
-MW, so once $\varphi \neq 0$, $B$ must be in genuine MW/radian.
-
-\newpage
-\section{Stage 2 --- the Moore--Penrose pseudoinverse}
-
-\subsection*{Why $L$ cannot be inverted}
-
-Every column of $K$ has one $+1$ and one $-1$, so
-\begin{equation}
-  K\T\mathbf{1} = \mathbf{0}
-  \quad\Longrightarrow\quad
-  L\mathbf{1} = K B (K\T \mathbf{1}) = \mathbf{0}.
-\end{equation}
-The all-ones vector is in the nullspace: adding the same angle to every bus
-changes no flow. Measured, $\|L\mathbf{1}\|_\infty = \gLone$.
-
-Here $\operatorname{rank}(L) = \grank$ of $\gnb$, so the nullity is $\gnullity$ ---
-one dimension per connected component. The extra three are the AC-isolated far
-terminals of the DC links (Moyle's Scotland end, \texttt{GB\_EWIC},
-\texttt{GB\_GREENLINK}); a DC link is a controllable injection, not a branch,
-so it never enters $K$.
-
-\subsection*{What Moore--Penrose gives}
-
-$\Lp$ is the unique matrix satisfying Penrose's four conditions. What matters
-here is that it inverts $L$ on the orthogonal complement of the nullspace and
-returns the \textbf{minimum-norm} solution --- so $\theta = \Lp p$ satisfies
-$\mathbf{1}\T\theta = 0$.
-
-\textbf{This is not a workaround for the singularity; it is a choice of
-reference, made explicit.} The textbook alternative deletes a slack row and
-column, which writes an arbitrary choice into every number that follows.
-
-\subsection*{Why it amounts to uniform distributed slack}
-
-Inject 1\,MW at bus $n$ and withdraw it evenly everywhere:
-$p = e_n - \tfrac{1}{N}\mathbf{1}$. Since $\Lp\mathbf{1} = \mathbf{0}$,
-\begin{equation}
-  \Lp p = \Lp e_n - \tfrac{1}{N}\Lp\mathbf{1} = \Lp e_n .
-\end{equation}
-So reading column $n$ of $\Lp$ \emph{is} injecting at $n$ against a uniform
-distributed slack. \qed{}
-
-\newpage
-\subsection*{$\Lp$ --- the whole thing, and why it is expensive}
-
-\begin{center}\includegraphics[width=\linewidth]{figures/m_Lp}\end{center}
+\textbf{$B$, susceptance, $\gne \times \gne$ diagonal.} Electrical strength
+only: $B_{ee} = b_e = 1/x_e$, from the per-unit reactance.
 
 \medskip
-$L$ is $\gLdense\%$ dense. $\Lp$ is $\gLpdense\%$ dense.
-\textbf{Inversion destroys sparsity} --- every bus becomes coupled to every
-other --- which is why this single SVD is the only expensive step in the
-pipeline. It is done once and reused for every branch, every wind node and
-every snapshot.
-
-\subsection*{$\Lp$ --- real entries \quad ($\times 10^{-4}$ rad/MW)}
-
-\begin{center}\input{generated/w_Lp}\end{center}
-
-\newpage
-\section{Stage 3 --- the PTDF}
-
+\textbf{$L = KBK\T$, the weighted Laplacian, $\gnb \times \gnb$.} Topology
+and strength combined, and the matrix that must be inverted:
 \begin{equation}
-  \boxed{\;\text{PTDF} \;=\; B K\T \Lp\;}
-  \qquad
-  \underbrace{(\gne \times \gne)}_{B}
-  \underbrace{(\gne \times \gnb)}_{K\T}
-  \underbrace{(\gnb \times \gnb)}_{\Lp}
-  \;\longrightarrow\; \gne \times \gnb
+  L\theta \;=\; p .
 \end{equation}
-
-Read as two composed steps:
-\[
-  \text{PTDF} \;=\; \underbrace{B K\T}_{\text{angles}\,\to\,\text{flows}}
-                \cdot \underbrace{\Lp}_{\text{injections}\,\to\,\text{angles}}
-\]
-$\Lp$ solves the network; $B K\T$ reads flows off the angles, since $K\T\theta$
-is the angle difference across each branch and multiplying by $1/x$ is Ohm's
-law. Pre-multiplying them means the network is never solved again.
-
-\subsection*{What one entry means}
-\[
-  \text{PTDF}_{en} \;=\;
-  \frac{\partial f_e}{\partial p_n}
-  \;=\;
-  \begin{minipage}{0.5\linewidth}
-  change in flow on branch $e$, in MW, per MW injected at bus $n$, with the
-  balancing withdrawal spread uniformly.
-  \end{minipage}
-\]
-Dimensionless --- MW per MW\@. Here it spans $[\gptdfmin, \gptdfmax]$.
-\textbf{It is the exact analytic derivative of the model, not a
-finite-difference estimate}; every one of the $\gnPtdfEntries$ entries falls out
-of the single inversion in Stage 2.
-
-\subsection*{The check that costs nothing}
-\begin{equation}
-  \sum_{n} \text{PTDF}_{en} = 0 \quad \text{for every } e,
-\end{equation}
-because injecting 1\,MW at every bus simultaneously moves no power.
-Measured: $\growsum$.
-
-\newpage
-\begin{center}\includegraphics[width=\linewidth]{figures/m_PTDF}\end{center}
-
-\subsection*{PTDF --- real entries}
-
-The $\gwine$ congested branches against ten buses. A star marks a bus with wind
-on it; the rest are load, conventional generation, or bare junctions.
-\begin{center}\input{generated/w_PTDF_mixed}\end{center}
-
-\note{Both signs occur and both are meaningful. A negative entry means
-injection at $n$ pushes flow in the \texttt{bus1}$\to$\texttt{bus0} direction
---- it does \emph{not} yet mean ``makes congestion worse''. That reading needs
-Stage 4.}
-
-\newpage
-\section{Selecting the wind nodes}
-
-PTDF has a column for every one of the $\gnb$ buses. Only $\gnwind$ of them
-carry wind, and only wind can be curtailed --- so the $\gnnonwind$ remaining
-columns are not part of any curtailment decision.
-
-\textbf{This is a column selection and nothing more.} Write $S$ for the
-$\gnb \times \gnwind$ matrix with a single $1$ in each column, at the row of
-that wind bus:
-\begin{equation}
-  \text{PTDF}_{\text{wind}} \;=\; \text{PTDF} \cdot S,
-  \qquad
-  S \in \{0,1\}^{\gnb \times \gnwind},
-  \qquad
-  \gne \times \gnb \;\longrightarrow\; \gne \times \gnwind .
-\end{equation}
-No arithmetic happens. Nothing is recomputed. In code it is
-\texttt{ptdf[:, wind\_buses]}.
-
-\subsection*{Why the other \texorpdfstring{$\gnnonwind$}{597} buses cannot be dropped earlier}
-
-They are not padding --- they are the network the power flows \emph{through}.
-Column $n$ of PTDF is $B K\T (\Lp e_n)$, and $\Lp e_n$ is the whole network's
-response to an injection at $n$. That response depends on every bus and every
-branch. \textbf{There is no $\gnwind \times \gnwind$ Laplacian to build}:
-delete the Dublin load buses and the Donegal wind columns change.
 
 \medskip
-So the selection has to come \emph{after} Stages 1--3, never before. One could
-compute only the $\gnwind$ needed columns of $\Lp$ --- that is $\gnwind$
-least-squares solves rather than a full pseudoinverse --- but on a
-$\gnb \times \gnb$ matrix the full \texttt{pinv} takes under a second, and
-computing all of it buys the row-sum check across every bus for free.
+\note{\textbf{Why any of this is linear.} The AC equations are not. The DC
+approximation holds bus voltages at $1$ p.u., takes $r \ll x$ so losses
+vanish, and takes angle differences small so
+$\sin(\theta_i-\theta_j)\approx\theta_i-\theta_j$. Flow is then exactly linear
+in the angle difference, $f_e = b_e(\theta_i-\theta_j)$. That is the whole
+reason a closed-form sensitivity exists at all.}
 
-\note{Kron reduction onto the wind buses would also be wrong here. It preserves
-behaviour at the retained buses but discards flows on the eliminated branches
---- and every branch is monitored, including the $\gncongtx$ congested
-transformers.}
-
-\subsection*{Selection and the sign correction commute}
-
-The sign correction of Stage 4 scales each \emph{row}; the selection keeps
-certain \emph{columns}. Row scaling and column selection act on different
-indices, so
-\begin{equation}
-  \big(\operatorname{diag}(\sigma)\,\text{PTDF}\big) S
-  \;=\;
-  \operatorname{diag}(\sigma)\,\big(\text{PTDF}\,S\big),
-  \qquad \sigma_e = \operatorname{sign}(f_e).
-\end{equation}
-Verified numerically: the two orderings differ by $\gcommute$. The code slices
-first and signs second; this document signs first and slices second. Same
-matrix either way.
-
-\begin{center}\includegraphics[width=\linewidth]{figures/m_PTDFwind}\end{center}
-
-\subsection*{$\text{PTDF}\cdot S$ --- real entries}
-
-The same $\gwine$ congested branches, now against wind nodes only:
-\begin{center}\input{generated/w_PTDF}\end{center}
-
+% ===============================================================
 \newpage
-\section{Stage 4 --- correct the sign direction}
+\section{The matrices themselves}
 
-\subsection*{The problem}
-
-Two quantities sit on the \emph{same arbitrary axis} set by the \texttt{bus0}/
-\texttt{bus1} labelling: the base flow $f_e$, and the row $\text{PTDF}_{e,:}$.
-That axis came from data-file row order.
-
-Congestion, however, is about \emph{magnitude} --- $|f|$ against the rating:
-
-\begin{center}\small
-\begin{tabular}{lll}
-\toprule
-base flow on $e$ & overload means & relief requires\\
-\midrule
-positive (bus0$\to$bus1) & $f$ too large positive & $\text{PTDF}_{en} > 0$\\
-negative (bus1$\to$bus0) & $f$ too large negative & $\text{PTDF}_{en} < 0$\\
-\bottomrule
-\end{tabular}
+\begin{center}
+\includegraphics[height=0.295\textheight]{figures/m_K}\\[1mm]
+\includegraphics[height=0.295\textheight]{figures/m_L}\\[1mm]
+\includegraphics[height=0.295\textheight]{figures/m_Lp}
 \end{center}
 
-\textbf{So the sign meaning ``relieves congestion'' flips with an arbitrary
-labelling choice.} Roughly half of all branches are affected, and a
-sign-flipped ranking looks entirely plausible on inspection.
-
-\subsection*{Getting $f$ right: the phase-shift term}
-
-A phase shifter imposes its own angle, so $f = B(K\T\theta - \varphi)$. KCL
-still gives $Kf = p$, so
-\begin{align}
-  K B (K\T\theta - \varphi) &= p\\
-  L\theta &= p + KB\varphi .
-\end{align}
-The shifter appears exactly where an injection would --- \textbf{it behaves as
-a pair of equal and opposite injections at its two ends.} Define
-$p_{\text{eff}} = p + KB\varphi$; then
+% ===============================================================
+\newpage
+\section{The PTDF}
 
 \begin{equation}
-  \boxed{\;\theta = \Lp p_{\text{eff}}, \qquad
-  f = B K\T\theta - B\varphi = \text{PTDF}\cdot p_{\text{eff}} - B\varphi\;}
+  \text{PTDF} \;=\; B K\T \Lp,
+  \qquad \gne \times \gnb, \quad \gnPtdfEntries \text{ entries}.
+  \label{eq:ptdf}
 \end{equation}
 
-Same $\Lp$, same PTDF, one modified input vector and one constant subtraction.
+$\text{PTDF}_{e,n}$ is the flow appearing on branch $e$ when $1$\,MW is
+injected at bus $n$ and withdrawn across the slack.
 
-\textbf{Three properties.}
-\emph{(i)} $\mathbf{1}\T p_{\text{eff}} = \mathbf{1}\T p + (K\T\mathbf{1})\T
-B\varphi = 0$, so balance survives --- measured $\gpeffsum$.
-\emph{(ii)} Expanding, $f = \text{PTDF}\cdot p + c$ with
-$c = (BK\T\Lp K - I)B\varphi$ independent of $p$: a constant offset, not a
-different model.
-\emph{(iii)} At $\varphi = 0$ it reduces term by term to $f = \text{PTDF}\cdot p$.
+\begin{center}\includegraphics[width=0.86\linewidth]{figures/m_PTDF}\end{center}
 
-\medskip
-\textbf{PTDF is untouched by any of this:}
-$\partial f/\partial p = \text{PTDF}\cdot \partial p_{\text{eff}}/\partial p =
-\text{PTDF}$, because $\varphi$ is a fixed device setting, not a function of
-injection.
 
+% ===============================================================
 \newpage
-\subsection*{Why the term is not optional}
+\section{The sensitivity matrix}
 
-This network has $\gnshift$ phase shifters, one at $\gshiftdeg^\circ$. Dropping
-$B\varphi$ leaves the most heavily loaded circuit in the network,
-\texttt{3581-89516-1}, reading $44.2$\,MW against a $123$\,MVA rating --- $36\%$
-loaded --- when it is in fact at $123.0$\,MW, \textbf{exactly at its limit}.
-It stops looking congested at all. Across the network, $272$ of $\gne$ branches
-come out wrong by more than 1\,MW, worst case $78.8$\,MW.
-
-\subsection*{The fix}
-
+Only one quantity in the pipeline moves hour to hour: the direction of flow.
 \begin{equation}
-  \boxed{\;\text{sensitivity}_{e,:} \;=\; \text{PTDF}_{e,:}\cdot
-  \operatorname{sign}(f_e)\;}
+  p_{\text{eff}} = p + KB\varphi, \qquad
+  f = \text{PTDF}\cdot p_{\text{eff}} - B\varphi, \qquad
+  S_{e,:} = \text{PTDF}_{e,:}\operatorname{sign}(f_e).
 \end{equation}
 
-\begin{center}\small
-\begin{tabular}{ll}
-\toprule
-$\operatorname{sign}(f_e) = +1$ & axis already runs along the real flow; row unchanged\\
-$\operatorname{sign}(f_e) = -1$ & axis runs backwards; row flipped\\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\textbf{Verification against EirGrid's convention.} Let
-$S = \text{PTDF}_{en}\operatorname{sign}(f_e)$. Reducing generation by $r>0$ at
-$n$ is an injection change of $-r$, so the flow-aligned quantity changes by
-$-Sr$:
-\begin{itemize}\itemsep0pt
-  \item $S>0$: change is negative, flow shrinks along its own direction,
-        magnitude falls --- \textbf{congestion relieved}. \checkmark{}
-  \item $S<0$: flow grows along its own direction, magnitude rises ---
-        \textbf{congestion worsened}. \checkmark{}
-\end{itemize}
-
-\subsection*{Flows and signs --- real values at \texttt{\gsnap}}
-
-\begin{center}\input{generated/w_f}\end{center}
-
-\note{This is the only snapshot-dependent step. Stages 1--3 depend on topology
-and reactance alone and hold for every hour of the year. Measured across all
-168 snapshots, a branch's sign agrees with its own peak-hour sign $98.6\%$ of
-the time when it is above $50\%$ loaded ($87.4\%$ at worst).}
-
-\newpage
-\section{The result}
-
-\begin{center}\includegraphics[width=\linewidth]{figures/m_sens}\end{center}
-
-\subsection*{Sensitivity --- real entries}
-
-\begin{center}\input{generated/w_sens}\end{center}
+\begin{center}\includegraphics[width=0.86\linewidth]{figures/m_sens}\end{center}
 
 \begin{center}\small
 \begin{tabular}{ll}
@@ -515,212 +168,95 @@ negative & curtailing at that wind node \textbf{loads it further}\\
 \end{center}
 
 \medskip
-Of $\gne$ branches, $\gncong$ reach their rating during the week ---
-$\gncongtx$ of them transformers, which a lines-only model would miss entirely.
+\note{$\varphi$ holds the phase shifts of the $\gnshift$ phase-shifting
+transformers. Dropping the $-B\varphi$ term puts the flow, and therefore the
+sign, and therefore every entry of $S$, wrong on those branches.}
 
+% ===============================================================
 \newpage
-\section*{Summary}
-\addcontentsline{toc}{section}{Summary}
+\section{In practice, only a small set of lines is congested}
 
-\begin{equation*}
-\begin{aligned}
-  \textbf{1.}\quad & K = \text{incidence}, \quad B = \operatorname{diag}(1/x),
-    \quad \varphi = \text{phase shifts}, \quad L = KBK\T\\[1mm]
-  \textbf{2.}\quad & \Lp = \operatorname{pinv}(L)\\[1mm]
-  \textbf{3.}\quad & \text{PTDF} = BK\T\Lp
-    \qquad\text{\note{$\gne\times\gnb$, snapshot-independent}}\\[1mm]
-  \textbf{4.}\quad & p_{\text{eff}} = p + KB\varphi, \quad
-    f = \text{PTDF}\cdot p_{\text{eff}} - B\varphi, \quad
-    \text{sensitivity}_{e,:} = \text{PTDF}_{e,:}\operatorname{sign}(f_e)
-\end{aligned}
-\end{equation*}
+Of $\gne$ branches, only a handful reach their rating at any hour of the week,
+and several of those are transformers, which a lines-only model would miss
+entirely.
+
+\begin{center}\includegraphics[width=\linewidth]{figures/f_heatmap}\end{center}
 
 \medskip
-Stages 1--3 are pure network. Stage 4 is the only part that moves hour to hour.
+Every constraint question in the rest of this document is a question about
+these rows. The remaining rows exist, are exact, and are never needed until the
+network changes, which is what an outage is.
 
-\medskip
-\note{Method and derivations: \texttt{shift-factor-ptdf-report.md}.
-Data: \texttt{results/}. Every number above is emitted by \texttt{build.py}
-from the same code that produced those CSVs --- none is typed by hand.}
-
-\medskip
-\note{\textbf{Limits.} DC approximation: no reactive power, no losses, no
-voltage, so voltage-stability constraints cannot be represented. Intact base
-case only --- no contingencies, though real limits usually bind post-fault.
-Ratings are TYTFS \texttt{RATE1} planning values. All time series in the source
-network are synthetic, so the congested set is one draw from one modelled week;
-the PTDF itself does not depend on it.}
-
+% ===============================================================
 \newpage
 \section{Net sensitivity: a constraint group that cannot break what it did not look at}
 
-\subsection*{Shift factor, revisited}
+\subsection*{The group, as it is drawn today}
 
-Every quantity a constraint group is built from is already in hand: row $e$ of
-the sensitivity matrix (\S\ref{app:dump}, Stage 4) gives, for branch $e$, the
-change in $|f_e|$ per MW curtailed at every wind node --- signed so that
-positive means \emph{relief}. [WDT]'s method (Appendix 2, p.\,72) reads a
-\emph{single} row: pick the one congested circuit, rank nodes down that row,
-keep whatever clears a threshold $\tau$.
 \begin{equation}
-  \text{group}(e) \;=\; \{\, n : \text{sensitivity}_{e,n} \,\ge\, \tau \,\},
+  \text{group}(e) \;=\; \{\, n : S_{e,n} \,\ge\, \tau \,\},
   \qquad \tau = \pTau .
 \end{equation}
-That is one row of a $\gne\times\gnwind$ matrix, chosen and read in isolation.
-Nothing in it depends on any other row --- so nothing in it \emph{knows} about
-any other row.
 
 \subsection*{Sensitivities add. Net sensitivity is nothing more than that.}
 
 If several branches are over their rating at once, a node's total usefulness is
-just its sensitivities to each of them, summed:
+its sensitivities to each of them, summed:
 \begin{equation}
-  S_{\text{net}}(n) \;=\; \sum_{e\,\in\,\text{Over}} \text{sensitivity}_{e,n},
+  S_{\text{net}}(n) \;=\; \sum_{e\,\in\,\text{Over}} S_{e,n},
   \qquad \text{Over} = \{\, e : |f_e| > s_e \,\}.
   \label{eq:netsens}
 \end{equation}
-No new computation --- the matrix already holds every term on the right. A
-node relieving three circuits a little now outranks one relieving only the
-worst circuit a lot; a one-line group is unaffected, since \eqref{eq:netsens}
-collapses to the single term $\tau$ was already thresholding.
 
-\subsection*{Why net sensitivity alone is not enough}
+\subsection*{The critical principle}
 
-Ranking by $S_{\text{net}}$ still asks only \emph{"does this node help the
-branches I am watching."} It says nothing about the $\gne - |\text{Over}|$
-branches it is not watching. Tested directly: ranking by $S_{\text{net}}$ with
-no further check pushed a branch that was inside its rating over it in
-\pOvlBrokeEvents\ of \pN\ events --- \emph{worse} than the threshold method it
-replaces. Concentrating a whole instruction on the single most useful node
-moves the rest of the network harder than the same megawatts spread out.
-\textbf{The safety was never going to come from the ranking.} It has to come
-from a separate rule.
+\textbf{No dispatch down of a node may cause an overload on any other branch.}
 
-\subsection*{The veto}
+\begin{center}\includegraphics[width=0.92\linewidth]{figures/f_reach}\end{center}
+\note{Left: how many congested branches each wind node reaches. Right: its net
+weighted relief, \eqref{eq:netsens}. A node dark on the left and pale on the
+right is broad but pulling both ways at once, which counting rows cannot
+distinguish and summing them can.}
 
-A node's cut is capped, not by $\tau$, but by the largest amount that leaves
-\emph{every live branch} $k$ --- not just the ones in Over --- inside its
-rating, and leaves nothing already over made worse:
-\begin{equation}
-  x_n^{\max} \;=\; \min_{k \,:\, \text{sensitivity}_{k,n} < 0}
-  \;\frac{\text{rating}_k - |f_k|}{|\text{sensitivity}_{k,n}|},
-  \qquad
-  \text{lim}_k = \max\!\big(|f_k|,\ \text{rating}_k\big) \text{ for } k \in \text{Over}.
-  \label{eq:veto}
-\end{equation}
-Every branch in the network enters this minimum, whether it is congested or
-not --- because the branch a bad instruction breaks is, by definition, one
-that was not being watched. A node is included in the group only up to
-$x_n^{\max}$; ordering by $S_{\text{net}}$ decides \emph{who goes first},
-\eqref{eq:veto} decides \emph{how far they may go}. The two are independent
-checks and the results below keep them separate.
+% ===============================================================
+\newpage
+\section{Doing this for every N--1 contingency}
 
-\begin{center}\small
-\begin{tabular}{lrrrr}
-\toprule
-& \textbf{cleared} & \textbf{events broke a line} & \textbf{lines broken} & \textbf{median group}\\
-\midrule
-Shift-factor threshold (today) & \pEirCleared\% & \pEirBrokeEvents & \pEirBrokeLines & \pEirMedNodes\ nodes\\
-Net sensitivity + veto & \pVetoCleared\% & \pVetoBrokeEvents & \pVetoBrokeLines & \pVetoMedNodes\ node\\
-\bottomrule
-\end{tabular}
-\end{center}
-\pN\ (outage, hour) events, every single-branch outage at every hour of the
-week. On the events both methods clear, the veto method cuts
-\pSavedMW\ MW less wind --- \pSavedPct\% --- because it targets the effective
-node instead of splitting pro-rata across \pEirMedNodes. The proven optimum
-(the same rule in \eqref{eq:veto}, solved exactly rather than applied greedily)
-clears \pLpCleared\%; a safe remedy provably exists in \pLpFeasible\% of events.
-
-\subsection*{Fixed, and precomputable, per outage}
-
-Neither \eqref{eq:netsens} nor \eqref{eq:veto} depends on the hour or the
-weather --- both are read off the sensitivity matrix, which is topology and
-reactance only. So the group for \emph{every} single-branch outage can be
-built once, offline, and looked up: \pTripsOutages\ outages produce
-\pTripsCircuits\ distinct circuits ever at risk, \pTrips\ (outage, circuit)
-lookup rows in total. \pVetoedFromEir\ of the \pTripsCircuits-circuit
-threshold method's own \pEirMedNodes-node-median memberships
-(\pVetoedFromEirPct\% of every member ever proposed) fail \eqref{eq:veto} and
-are excluded before dispatch. Only the live flow and the final MW instruction
-are computed online.
-
-\subsection*{Finding 1 --- curtailment is concentrated on a handful of nodes}
-
-Running \eqref{eq:veto} across every one of the \pN\ events and tracking which
-nodes the safe remedy actually dispatches, not merely which ones qualify as
-candidates: no node is cut in \emph{zero} events --- the least-used one is
-still asked \pMinCutEvents\ times out of \pN --- so there is no node that can
-be declared exempt outright. What the same sweep shows instead is
-concentration. The \textbf{5} busiest nodes account for \pTopFivePct\% of every
-megawatt curtailed anywhere in the study; the top 10 for \pTopTenPct\%; the top
-20 for \pTopTwentyPct\%. \pRareN\ of \pWindN\ nodes --- \pRarePct\% of the fleet,
-\pRareMW\ MW of nameplate, \pRareFleetPct\% of the \pWindFleetMW\ MW installed
---- are cut in under 1\% of the \pN\ events, and the median node across the
-whole fleet is cut in only \pMedEventsPct\% of them, keeping \pMedKeptPct\% of
-whatever it was offering when it was. Overall the safe remedy cuts
-\pOverallCutPct\% of all wind offered across the entire N--1 study:
-\pTotalCutMW\ MW of \pTotalOfferedMW\ MW. \textbf{For the great majority of
-the fleet, a constraint group is something that applies to them on a handful
-of days a year, not a standing limit on their output.}
-
-\subsection*{Finding 2 --- stopping the cascade}
-
-Follow the chain past the first trip: whatever is left over its rating after
-the remedy trips too, and the flows are recomputed with it also out of
-service. \pCascN\ starting outages, run to exhaustion under four remedies:
-
-\begin{center}\small
-\begin{tabular}{lrrr}
-\toprule
-& \textbf{lines lost, total} & \textbf{outages that spread} & \textbf{islanded}\\
-\midrule
-No remedy & \pNothingLost & \pNothingSpread\ / \pCascN & \pNothingIsl\\
-Shift-factor threshold & \pCEirLost & \pCEirSpread\ / \pCascN & \pCEirIsl\\
-Net sensitivity + veto & \pCVetoLost & \pCVetoSpread\ / \pCascN & \pCVetoIsl\\
-Safe optimum (LP) & \pCLpLost & \pCLpSpread\ / \pCascN & \pCLpIsl\\
-\bottomrule
-\end{tabular}
-\end{center}
-\note{This sample is deliberately enriched with the events where a remedy was
-already seen to break something, so the spread rate above is not the rate for
-a uniformly random N--1 --- it is a stress test, by design.}
+\textbf{The groups are fixed.} Membership is read off $S$, which is topology
+and reactance only, so it does not move with the hour or the weather. The group
+for every single-branch outage is built once, offline, and looked up:
+\pTripsOutages\ outages, \pTripsCircuits\ distinct circuits ever at risk,
+\pTrips\ lookup rows.
 
 \medskip
-\note{\textbf{Limits.} No thermal clock: a branch over its rating at the end
-of a round is taken to trip, the pessimistic reading, since real protection is
-time-overcurrent. The veto is exact only inside the DC linearisation it shares
-with the rest of this document. Weather is synthetic, so the event count and
-the MW figures move with real data; \emph{which} circuits are ever at risk does
-not, since it follows from $K$, $B$ and the ratings alone.}
+\textbf{Most of the fleet is almost never in one.} Across all \pN\ events,
+\pRareN\ of \pWindN\ nodes, \pRareFleetPct\% of installed capacity, are
+dispatched down in under $1\%$ of them. The median node keeps
+\pMedKeptPct\% of everything it offers, and over the whole study only
+\pOverallCutPct\% of all wind offered is curtailed.
 
-\appendix
+\medskip
+For those generators a constraint group binds on a handful of hours a year. It
+is not a standing limit on output, and they run at full power essentially all
+the time.
+
+\medskip
+\textbf{And a few of these outages do not stop at one circuit.}
+
+% ===============================================================
 \newpage
-\section{Complete matrices, entry by entry}\label{app:dump}
+\section{Another application: stopping cascading outages}
 
-\ifdefined\fulldump
-  \input{generated/dump_K}
-  \input{generated/dump_L}
-  \input{generated/dump_Lp}
-  \input{generated/dump_PTDF}
-  \input{generated/dump_sens}
-\else
-  Not generated in this build. Run
-  \medskip
+Most single-branch outages are absorbed. Flows redistribute and nothing else
+reaches its rating. A small number are not: the first trip pushes other
+elements over their limits, those trip in turn, and the failure propagates.
 
-  \texttt{python build.py --full-dump \&\& latexmk -pdf pipeline.tex}
-  \medskip
+\medskip
+This is where the two constraint groups separate. A group drawn from one row can
+relieve the congested circuit while pushing a healthy one over, which starts the
+next link in the chain. A group built under the critical principle cannot.
 
-  \noindent to include every entry of $K$, $L$, $\Lp$, PTDF and the sensitivity
-  matrix, split into column blocks narrow enough for \TeX{} to typeset. It is
-  off by default because it runs to several hundred pages: $\Lp$ alone is
-  $\gnLpEntries$ entries and PTDF is $\gnPtdfEntries$.
-
-  \medskip
-  \noindent The same numbers are available in a form better suited to reading:
-  \texttt{results/ptdf/ptdf\_wind.csv},
-  \texttt{results/sensitivity/sensitivity\_wind.csv}, and the interactive
-  \texttt{results/sensitivity/viewers/ptdf\_viewer\_withOverlaps.html}.
-\fi
+\medskip
+\begin{center}\includegraphics[width=\linewidth]{figures/f_cascade}\end{center}
 
 \end{document}
