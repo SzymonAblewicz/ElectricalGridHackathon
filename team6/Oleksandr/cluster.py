@@ -53,6 +53,7 @@ matplotlib.use("Agg")  # written to a file, never shown
 import matplotlib.pyplot as plt  # noqa: E402  (needs the backend set above)
 from matplotlib.collections import LineCollection  # noqa: E402
 
+import cluster_maps  # noqa: E402
 import graph_lib as gwg  # noqa: E402
 
 
@@ -146,17 +147,74 @@ def cut(A: sparse.csr_array, labels: np.ndarray) -> tuple[float, float]:
     return float(upper.data[crossing].sum()), float(upper.data.sum())
 
 
+def corridors(
+    branches: pd.DataFrame, node_index: pd.DataFrame, labels: np.ndarray
+) -> pd.DataFrame:
+    """One row per corridor, with the cluster at each end and whether it is cut.
+
+    A corridor is a bus pair joined by one or more branches, lines and
+    transformers alike, rated at their summed `s_nom` - the same merge
+    `adjacency()` does, so each row here is one bus-bus entry of A. Generator
+    leaf edges are left out: they are not corridors, and a generator never lands
+    in a different cluster from its own bus anyway.
+
+    Each row is oriented so `cluster0 <= cluster1`, which makes the cut rows
+    group by cluster pair when sorted. Cut corridors come first, largest first.
+
+    A cut transformer leg often joins two buses of the same substation - a 220 kV
+    bus and its 3-winding star point, say - so its two ends share a coordinate
+    and the map draws it with zero length. This file is where those show up.
+    """
+    ends = np.sort(branches[["bus0", "bus1"]].to_numpy(str), axis=1)
+    grouped = (
+        branches.assign(bus0=ends[:, 0], bus1=ends[:, 1])
+        .groupby(["bus0", "bus1"], as_index=False)
+        .agg(s_nom=("s_nom", "sum"),
+             circuits=("name", "size"),
+             kind=("kind", lambda s: "+".join(sorted(set(s)))),
+             branches=("name", lambda s: " ".join(map(str, s))))
+    )
+    position = pd.Series(np.arange(len(node_index)), index=node_index["name"])
+    i = position[grouped["bus0"]].to_numpy()
+    j = position[grouped["bus1"]].to_numpy()
+    flip = labels[i] > labels[j]
+    i, j = np.where(flip, j, i), np.where(flip, i, j)
+
+    name = node_index["name"].to_numpy()
+    station = node_index["station"].to_numpy()
+    v_nom = node_index["v_nom"].to_numpy()
+    frame = pd.DataFrame({
+        "bus0": name[i], "station0": station[i], "v_nom0": v_nom[i], "cluster0": labels[i],
+        "bus1": name[j], "station1": station[j], "v_nom1": v_nom[j], "cluster1": labels[j],
+        "s_nom": grouped["s_nom"].to_numpy(),
+        "circuits": grouped["circuits"].to_numpy(),
+        "kind": grouped["kind"].to_numpy(),
+        "branches": grouped["branches"].to_numpy(),
+        "cut": labels[i] != labels[j],
+    })
+    return frame.sort_values(["cut", "cluster0", "cluster1", "s_nom"],
+                             ascending=[False, True, True, False], ignore_index=True)
+
+
 # ---- output ---- #
 
 
-def plot(
+def draw(
+    ax: plt.Axes,
     A: sparse.csr_array,
     node_index: pd.DataFrame,
     labels: np.ndarray,
-    path: Path,
-    title: str,
-) -> None:
-    """The geographic view, nodes coloured by cluster.
+    rings: np.ndarray | None = None,
+) -> str:
+    """The geographic view onto `ax`, nodes coloured by cluster.
+
+    Returns the "buses placed, corridors cut" line that plot() puts under its
+    title. Kept apart from plot() so cluster_maps.py can draw this same map onto
+    axes of its own and zoom it to one cluster.
+
+    `rings`, when given, are node indices to circle in red - main() passes the
+    substations whose transformer is cut, since that cut joins two co-located
+    buses and would otherwise draw as a red line of zero length.
 
     Adapted from `get_weighted_graph.plot` rather than sharing it: that one
     draws capacity and a sparsity pattern, this one draws a partition, and the
@@ -184,26 +242,43 @@ def plot(
     palette = plt.get_cmap("tab20" if k > 10 else "tab10")
     colours = np.array([palette(c % palette.N) for c in range(k)])
 
-    fig, ax = plt.subplots(figsize=(8.5, 9))
     ax.add_collection(LineCollection(
         segments[~crossing], linewidths=0.5, colors="#b8bec9", alpha=0.8, zorder=1))
     ax.add_collection(LineCollection(
         segments[crossing], linewidths=1.1, colors="#d1495b", alpha=0.9, zorder=2))
-    ax.scatter(x[located], y[located], s=14, c=colours[labels[located]],
+    # Generators take the shared generator marker rather than a bus dot, so a
+    # unit on its bus reads as a unit; colour still says which cluster it is in.
+    is_gen = (node_index["node_type"] == "generator").to_numpy() \
+        if "node_type" in node_index else np.zeros(len(node_index), dtype=bool)
+    bus_dot, gen_dot = located & ~is_gen, located & is_gen
+    ax.scatter(x[bus_dot], y[bus_dot], s=14, c=colours[labels[bus_dot]],
                zorder=3, linewidths=0)
+    if gen_dot.any():
+        ax.scatter(x[gen_dot], y[gen_dot], s=24, marker=gwg.GENERATOR_MARKER,
+                   c=colours[labels[gen_dot]], zorder=3, linewidths=0)
+    ringed = rings[located[rings]] if rings is not None else np.array([], dtype=int)
+    if len(ringed):
+        ax.scatter(x[ringed], y[ringed], s=160, facecolors="none",
+                   edgecolors="#d1495b", linewidths=1.6, zorder=4)
 
     ax.set_aspect(1 / np.cos(np.deg2rad(np.nanmean(y))))  # rough WGS84 fix
     ax.autoscale_view()
     ax.set_xlabel("longitude")
     ax.set_ylabel("latitude")
 
-    sizes = np.bincount(labels, minlength=k)
-    ax.legend(
-        handles=[plt.Line2D([], [], marker="o", linestyle="", color=colours[c],
-                            label=f"cluster {c} — {sizes[c]} nodes")
-                 for c in range(k)]
-        + [plt.Line2D([], [], color="#d1495b", label="corridor between clusters")],
-        loc="best", fontsize=9, frameon=False)
+    # No per-cluster entries: the colours already tell the clusters apart, and a
+    # list of k of them covers the map - worst on the zoomed per-cluster views.
+    handles = []
+    if gen_dot.any():
+        handles.append(plt.Line2D([], [], marker=gwg.GENERATOR_MARKER, linestyle="",
+                                  color="#5b6472", label="generator (cluster colour)"))
+    handles.append(plt.Line2D([], [], color="#d1495b", label="corridor between clusters"))
+    if len(ringed):
+        handles.append(plt.Line2D(
+            [], [], marker="o", linestyle="", markersize=11, markerfacecolor="none",
+            markeredgecolor="#d1495b", markeredgewidth=1.6,
+            label=f"cut transformer — {len(ringed)} substations"))
+    ax.legend(handles=handles, loc="best", fontsize=9, frameon=False)
     # A generator row may or may not carry a coordinate - gwg.geocode() gives
     # it one, plain node_index never does - but either way it is not a bus,
     # so it is excluded from both sides of the fraction rather than
@@ -212,9 +287,22 @@ def plot(
         else np.ones(len(node_index), dtype=bool)
     drawn = int(is_bus.sum())
     bus_located = int((located & is_bus).sum())
-    ax.set_title(f"{title}\n{bus_located}/{drawn} buses placed, "
-                 f"{crossing.sum()}/{drawable.sum()} drawn corridors cut")
+    return (f"{bus_located}/{drawn} buses placed, "
+            f"{crossing.sum()}/{drawable.sum()} drawn corridors cut")
 
+
+def plot(
+    A: sparse.csr_array,
+    node_index: pd.DataFrame,
+    labels: np.ndarray,
+    path: Path,
+    title: str,
+    rings: np.ndarray | None = None,
+) -> None:
+    """The overview map: draw() on a figure of its own, titled and saved."""
+    fig, ax = plt.subplots(figsize=(8.5, 9))
+    stats = draw(ax, A, node_index, labels, rings)
+    ax.set_title(f"{title}\n{stats}")
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
@@ -267,11 +355,34 @@ def main() -> None:
     csv_path = out / f"clusters_{EMBEDDING}{tag}_k{K}.csv"
     frame.to_csv(csv_path)
 
+    # Only the cut corridors go to the file - the boundary is what it is for. The
+    # full frame is kept here so the summary can still say how many of how many.
+    links = corridors(branches, node_index, labels)
+    corridors_path = out / f"corridors_{EMBEDDING}{tag}_k{K}.csv"
+    links[links["cut"]].drop(columns="cut").to_csv(corridors_path, index=False)
+
     # Estimated for the plot only, same as get_weighted_graph.py's own
     # construction graph - the CSV above keeps the real, ungeocoded x/y.
     pdf_path = out / f"clusters_{EMBEDDING}{tag}_k{K}.pdf"
-    plot(A, gwg.geocode(node_index, branches), labels, pdf_path,
-         f"{CASE}{' +generators' if GENERATORS else ''} — {EMBEDDING}, k = {K}")
+    # A cut transformer joins two buses of one substation - often a bus and its
+    # fictitious 3-winding star point - so its red line usually has zero length
+    # and the cut is invisible. It is ringed instead, on its real bus end: a star
+    # point's position is only an average of its neighbours, the bus is the site.
+    cut_tx = links[links["cut"] & links["kind"].str.contains("transformer")]
+    real_end = np.where(cut_tx["bus0"].str.startswith("star:"),
+                        cut_tx["bus1"], cut_tx["bus0"])
+    position = pd.Series(np.arange(len(node_index)), index=node_index["name"])
+    rings = np.unique(position[real_end].to_numpy())
+    placed = gwg.geocode(node_index, branches)
+    title = f"{CASE}{' +generators' if GENERATORS else ''} — {EMBEDDING}, k = {K}"
+    plot(A, placed, labels, pdf_path, title, rings=rings)
+
+    # The same map again, zoomed to one cluster at a time, in a subfolder of its
+    # own named after the run so the overview is not buried among them.
+    maps_dir = out / f"clusters_{EMBEDDING}{tag}_k{K}"
+    maps = cluster_maps.plot_per_cluster(
+        lambda ax: draw(ax, A, placed, labels, rings),
+        placed, labels, maps_dir, title)
 
     listing = "\n".join(
         f"    {c:>2}. {sizes[c]:>5} nodes" for c in range(K))
@@ -285,8 +396,12 @@ def main() -> None:
         f"  clusters\n{listing}\n"
         f"  cut        {crossing:,.0f} of {total:,.0f} {units} crosses a "
         f"boundary ({100 * crossing / total:.2f}%)\n"
+        f"  corridors  {links['cut'].sum()} of {len(links)} cut, "
+        f"{links.loc[links['cut'], 's_nom'].sum():,.0f} MVA\n"
         f"  wrote      {csv_path}\n"
-        f"             {pdf_path}"
+        f"             {corridors_path}\n"
+        f"             {pdf_path}\n"
+        f"             {maps_dir}  ({len(maps)} cluster maps)"
     )
 
 

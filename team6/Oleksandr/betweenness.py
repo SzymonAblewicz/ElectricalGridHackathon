@@ -243,8 +243,10 @@ def plot(
                           label=f"bus — {int(bus_drawn.sum())} drawn")]
     if gen_drawn.any():
         ax.scatter(x[gen_drawn], y[gen_drawn], s=24, c=score[gen_drawn],
-                   cmap="viridis", norm=norm, marker="^", zorder=2, **edge)
-        handles.append(plt.Line2D([], [], marker="^", linestyle="", color="#5b6472",
+                   cmap="viridis", norm=norm, marker=gwg.GENERATOR_MARKER, zorder=2,
+                   **edge)
+        handles.append(plt.Line2D([], [], marker=gwg.GENERATOR_MARKER, linestyle="",
+                                  color="#5b6472",
                                   label=f"generator — {int(gen_drawn.sum())} drawn, "
                                         "all exactly 0"))
     ax.legend(handles=handles, loc="best", fontsize=9, frameon=False)

@@ -75,14 +75,14 @@ import graph_lib as gwg  # noqa: E402
 # clusters the graph has, so a first pass at any K tells you what to set it to.
 
 CASE = "TYTFS2024_WP2024_V35_transmission"
-K = 6                # clusters wanted
+K = 8                # clusters wanted
 GENERATORS = True    # include the generators as nodes of their own
 EMBEDDING = "sym"    # "sym" | "rw" | "unnorm"
 
 
 # Eigenpairs computed beyond K, so the gap *after* the K-th one is visible and
 # the eigengap heuristic has something to say about whether K was a good choice.
-EXTRA = 5
+EXTRA = 30
 
 # Just below zero: near enough that shift-invert converges on the bottom of the
 # spectrum, far enough that the factorisation is not asked to invert the exact

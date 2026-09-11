@@ -40,6 +40,12 @@ OUT_DIR = FOLDER / "data" / "graphs"
 BUS_COLUMNS = ["name", "v_nom", "x", "y", "jurisdiction", "station"]
 RANDOM_RADIUS = 0.03
 
+# The shape every map in this folder draws a generator with, so a generator
+# reads as a generator on the construction graph, the betweenness map and the
+# cluster maps alike, whatever colour each of them gives it. Any matplotlib
+# marker code works: "^" triangle, "s" square, "D" diamond, "*" star.
+GENERATOR_MARKER = "^"
+
 # ---- reading ---- #
 
 
@@ -364,7 +370,7 @@ def plot(A: sparse.csr_array, bus_index: pd.DataFrame, path: Path, note: str = "
     if gen_drawn.any():
         left.scatter(
             x[gen_drawn], y[gen_drawn],
-            s=14, marker="^",
+            s=14, marker=GENERATOR_MARKER,
             c="#2a9d8f", zorder=3, linewidths=0, label="generator",
         )
         left.legend(loc="best", fontsize=8, frameon=False)

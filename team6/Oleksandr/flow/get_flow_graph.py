@@ -24,18 +24,29 @@ Two datasets, chosen by DATASET, and they need different amounts of work to reac
 
 Either way no optimisation and no cost assumption enters, unless DISPATCH is set to "lopf".
 
-Two weightings, both read by the Laplacian as *affinity* ("a big number means these two
+Three weightings, all read by the Laplacian as *affinity* ("a big number means these two
 belong together"), which is the same requirement `spectrum.py` documents when it refuses
 `reciprocal()`:
 
-    headroom       s_nom - |F|     spare capacity. A corridor at its rating scores ~0 and
-                                   becomes a spectral cut, so the clusters are zones power
-                                   moves freely inside and the cut edges are the constraints.
+    headroom           s_nom - |F|       spare capacity. A corridor at its rating scores ~0
+                                         and becomes a spectral cut, so the clusters are zones
+                                         power moves freely inside and the cut edges are the
+                                         constraints.
 
-    inverse_flow   1 / |F|         inverse throughput. A quiet corridor scores high, so the
-                                   cuts land on the *busiest* corridors instead. The opposite
-                                   reading from headroom, and a different hypothesis about
-                                   where the zone boundaries are - worth running both.
+    loading            |F| / s_nom       how full the corridor is, as a share of its rating.
+                                         The mirror image of headroom: a heavily used corridor
+                                         binds its two ends together and an idle one is the
+                                         cut, so the clusters are communities that exchange a
+                                         lot of power relative to what their links can carry,
+                                         and the boundaries are the corridors power is not
+                                         using. Scale-free: a 3,846 MVA backbone and a 123 MVA
+                                         feeder that are both half full score the same 0.5.
+                                         Flows under FLOW_FLOOR are read as FLOW_FLOOR, so an
+                                         idle corridor is a weak tie rather than a missing edge.
+
+    inverse_flow       1 / |F|           inverse throughput. A quiet corridor scores high, so
+                                         the cuts land on the *busiest* corridors instead - the
+                                         opposite end of the scale from loading.
 
 On BALANCE, which is not a detail. The TYTFS dispatch does not balance: on WP2033 the main
 synchronous area is +877 MW long, because the original PSS/E case was an AC solution whose
@@ -76,6 +87,8 @@ from scipy.sparse import csgraph  # noqa: E402
 
 import graph_lib as gwg  # noqa: E402
 import spectrum as spec  # noqa: E402
+import cluster as clu  # noqa: E402
+import cluster_maps  # noqa: E402
 
 
 def quiet() -> None:
@@ -112,9 +125,9 @@ def quiet() -> None:
 
 DATASET = "kit"               # "tytfs" | "kit"
 CASE = "WP2033_all-island"    # a directory name under whichever DATASET selects
-WEIGHTING = "headroom"        # "headroom" | "inverse_flow"
+WEIGHTING = "loading"        # "headroom" | "loading" | "inverse_flow"
 BALANCE = "scale_loads"       # "scale_loads" | "none" - read the docstring before changing
-K = 6                         # clusters wanted
+K = 6                       # clusters wanted
 EMBEDDING = "sym"             # "sym" | "rw" | "unnorm"
 
 # --- kit only; ignored when DATASET == "tytfs" --- #
@@ -159,7 +172,8 @@ DISPATCH = "prorata"          # "prorata" | "lopf"
 
 
 # Eigenpairs computed beyond K, so the gap *after* the K-th is visible.
-EXTRA = 5
+EXTRA = 30
+RESTARTS = 10                 # k-means++ draws for the cluster map; the best is kept
 
 # A corridor at exactly its rating would otherwise leave the sparse matrix altogether,
 # changing the node set and the component count. The floor keeps the edge present and
@@ -176,7 +190,7 @@ HEADROOM_FLOOR = 1e-7         # MVA
 FLOW_FLOOR = 1.0              # MW
 
 DATASETS = ("tytfs", "kit")
-WEIGHTINGS = ("headroom", "inverse_flow")
+WEIGHTINGS = ("headroom", "loading", "inverse_flow")
 BALANCES = ("scale_loads", "none")
 DISPATCHES = ("prorata", "lopf")
 
@@ -384,9 +398,26 @@ def branch_weights(branches: pd.DataFrame, flow: pd.Series) -> np.ndarray:
     if np.isnan(f).any():
         missing = branches["name"][np.isnan(f)].tolist()
         raise ValueError(f"no flow computed for {len(missing)} branches: {missing[:5]}")
+    s_nom = branches["s_nom"].to_numpy(float)
     if WEIGHTING == "headroom":
-        return np.maximum(branches["s_nom"].to_numpy(float) - f, HEADROOM_FLOOR)
+        return np.maximum(s_nom - f, HEADROOM_FLOOR)
+    if WEIGHTING == "loading":
+        return rating_share(s_nom, f)
     return 1.0 / np.maximum(f, FLOW_FLOOR)
+
+
+def rating_share(rating: np.ndarray, used: np.ndarray) -> np.ndarray:
+    """max(used, FLOW_FLOOR) / rating - how full an element is, as a share of its rating.
+
+    Flows under FLOW_FLOOR are read as FLOW_FLOOR so an idle element stays a weak tie: a
+    weight of exactly zero would drop it from the sparse matrix and split the node set. There
+    is no upper clamp - an overloaded element simply scores above 1, the strongest tie of all.
+    An element with no rating has no share to take, so that raises rather than guessing.
+    """
+    if (rating <= 0).any():
+        raise ValueError(f"{int((rating <= 0).sum())} element(s) have a non-positive rating, "
+                         f"so 'loading' is undefined for them")
+    return np.maximum(used, FLOW_FLOOR) / rating
 
 
 def generator_weights(generators: pd.DataFrame, dispatch: pd.Series) -> np.ndarray:
@@ -394,12 +425,88 @@ def generator_weights(generators: pd.DataFrame, dispatch: pd.Series) -> np.ndarr
 
     `gwg.adjacency()` rates this edge at `p_nom`, the same capacity reading it gives a
     branch's `s_nom`. Keeping the analogy: under `headroom` the edge is worth the output the
-    unit is *not* producing, and under `inverse_flow` the inverse of what it is.
+    unit is *not* producing, under `loading` its output as a share of p_nom, and under
+    `inverse_flow` the inverse of its output.
     """
     p = dispatch.reindex(generators["name"]).fillna(0.0).abs().to_numpy(float)
+    p_nom = generators["p_nom"].to_numpy(float)
     if WEIGHTING == "headroom":
-        return np.maximum(generators["p_nom"].to_numpy(float) - p, HEADROOM_FLOOR)
+        return np.maximum(p_nom - p, HEADROOM_FLOOR)
+    if WEIGHTING == "loading":
+        return rating_share(p_nom, p)
     return 1.0 / np.maximum(p, FLOW_FLOOR)
+
+
+# ---- clustering and its map, shared by the flow scripts ---- #
+
+
+def cut_transformer_rings(links: pd.DataFrame, node_index: pd.DataFrame) -> np.ndarray:
+    """Node indices to ring on a cluster map: the real bus end of every cut transformer.
+
+    A cut transformer usually joins a bus to its own 3-winding star point, so its red line
+    has zero length and the cut would be invisible. It is ringed on the real bus instead - a
+    star point's position is only an average of its neighbours, the bus is the site. The
+    same rule cluster.py applies.
+    """
+    cut_tx = links[links["cut"] & links["kind"].str.contains("transformer")]
+    real_end = np.where(cut_tx["bus0"].str.startswith("star:"), cut_tx["bus1"], cut_tx["bus0"])
+    position = pd.Series(np.arange(len(node_index)), index=node_index["name"])
+    return np.unique(position[real_end].to_numpy())
+
+
+def cluster_and_map(A, node_index: pd.DataFrame, placed: pd.DataFrame, rated: pd.DataFrame,
+                    vectors: np.ndarray, degrees: np.ndarray, *, k: int, restarts: int,
+                    embedding: str, folder: Path, run: str, title: str) -> dict:
+    """k-means on the spectral embedding, then the cluster table, the cut list and the maps.
+
+    cluster.py's own steps, imported rather than copied, so a map drawn by any flow script
+    and one drawn by cluster.py mean the same thing: embed -> kmeans -> cut, the overview map
+    and one zoomed map per cluster. `rated` is the branch table with s_nom still in MVA: the
+    graph may be weighted by anything, but the list of cut corridors reads in the units a
+    planner uses.
+
+    Writes clusters_<run>.csv, corridors_<run>.csv, clusters_<run>.pdf and the folder
+    clusters_<run>/ into `folder`, and returns what the caller's summary needs.
+    """
+    E = clu.embed(vectors[:, :k], degrees, embedding)
+    labels, inertia = clu.kmeans(E, k, restarts)
+    crossing, total = clu.cut(A, labels)
+
+    table = node_index.assign(cluster=labels)
+    for c in range(k):
+        table[f"e{c + 1}"] = E[:, c]
+    csv_path = folder / f"clusters_{run}.csv"
+    table.to_csv(csv_path)
+
+    links = clu.corridors(rated, node_index, labels)
+    corridors_path = folder / f"corridors_{run}.csv"
+    links[links["cut"]].drop(columns="cut").to_csv(corridors_path, index=False)
+
+    rings = cut_transformer_rings(links, node_index)
+    pdf_path = folder / f"clusters_{run}.pdf"
+    clu.plot(A, placed, labels, pdf_path, title, rings=rings)
+    maps_dir = folder / f"clusters_{run}"
+    maps = cluster_maps.plot_per_cluster(
+        lambda ax: clu.draw(ax, A, placed, labels, rings), placed, labels, maps_dir, title)
+    return {"labels": labels, "inertia": inertia, "crossing": crossing, "total": total,
+            "sizes": np.bincount(labels, minlength=k), "links": links, "csv": csv_path,
+            "corridors": corridors_path, "pdf": pdf_path, "maps_dir": maps_dir, "maps": maps}
+
+
+def cluster_report(res: dict, *, k: int, restarts: int, weight: str) -> tuple[str, str]:
+    """The two blocks of summary a cluster_and_map caller prints: the partition, its files."""
+    links = res["links"]
+    stats = (
+        f"  clusters   k = {k}, sizes {res['sizes'].tolist()}, best of {restarts} k-means "
+        f"restarts, inertia {res['inertia']:.4g}\n"
+        f"  cut        {100 * res['crossing'] / res['total']:.2f}% of the graph's {weight} "
+        f"crosses a boundary; {int(links['cut'].sum())} of {len(links)} corridors cut,\n"
+        f"             {links.loc[links['cut'], 's_nom'].sum():,.0f} MVA of rating\n")
+    files = (
+        f"               {res['pdf'].name}   <- the clustered map\n"
+        f"               {res['csv'].name}, {res['corridors'].name}\n"
+        f"               {res['maps_dir'].name}/   ({len(res['maps'])} per-cluster zooms)")
+    return stats, files
 
 
 # ---- entry point ---- #
@@ -460,6 +567,7 @@ def main() -> None:
     # The weight column is overwritten rather than a new adjacency written, so corridor
     # aggregation, the generator-node block and the branchless-bus drop all stay in
     # get_weighted_graph.py and there is one implementation of each.
+    rated = branches              # s_nom still in MVA - the cluster map's cut list reads this
     branches = branches.assign(s_nom=branch_weights(branches, flow))
     generators = generators.assign(
         p_nom=generator_weights(generators, network.generators["p_set"]))
@@ -472,7 +580,8 @@ def main() -> None:
     gwg.save(A, construction, WEIGHTING)
     # Estimated for the plot only, same as get_weighted_graph.py's own
     # construction graph - the CSV above keeps the real, ungeocoded x/y.
-    gwg.plot(A, gwg.geocode(node_index, branches), construction / f"graph_{WEIGHTING}.pdf")
+    placed = gwg.geocode(node_index, branches)
+    gwg.plot(A, placed, construction / f"graph_{WEIGHTING}.pdf")
 
     # "sym" and "rw" differ only in a rescaling cluster.py applies afterwards, so both
     # decompose the same matrix - the same choice spectrum.py makes.
@@ -498,13 +607,37 @@ def main() -> None:
     spec.plot(values, suggested, clustering / f"{stem}.pdf",
               f"{CASE} +generators — {EMBEDDING}, {WEIGHTING}")
 
+    # The partition and its map, through the same helper get_susceptance_graph.py uses, so
+    # the flow scripts and cluster.py all draw a clustering the same way. A kit run is one
+    # hour of 168, so the hour goes into the file names - otherwise each run overwrites the
+    # last one's map.
+    run = f"{EMBEDDING}_{WEIGHTING}_k{K}"
+    if DATASET == "kit":
+        run += f"_{pd.Timestamp(stamp):%Y%m%d_%H%M}"
+    res = cluster_and_map(
+        A, node_index, placed, rated, vectors, D.diagonal(), k=K, restarts=RESTARTS,
+        embedding=EMBEDDING, folder=clustering, run=run,
+        title=f"{CASE} +generators — {EMBEDDING}, {WEIGHTING}, k = {K}"
+              + (f", {stamp}" if DATASET == "kit" else ""))
+    stats, files = cluster_report(
+        res, k=K, restarts=RESTARTS,
+        weight={"headroom": "headroom (MVA)", "loading": "loading weight",
+                "inverse_flow": "inverse-flow weight"}[WEIGHTING])
+
     weights = branches["s_nom"]
-    # The two weightings pin at opposite ends. Under `headroom` the clamp is a floor and a
-    # pinned corridor is a cut; under `inverse_flow` it is a ceiling, and a pinned corridor
-    # is one carrying nothing - the *most* strongly bound edge in the graph, not the least.
+    # The weightings clamp different elements and read the clamp differently. Under `headroom`
+    # the clamp is a floor on full corridors, and a pinned corridor is a cut. Under `loading`
+    # the clamp is on idle corridors, and they are the weak ties - so also cuts, but at the
+    # opposite end of the flow scale. Under `inverse_flow` the same idle corridors hit a
+    # ceiling and become the *most* strongly bound edges in the graph.
+    idle = int((flow.reindex(branches["name"]).to_numpy(float) < FLOW_FLOOR).sum())
     if WEIGHTING == "headroom":
         pinned = int((weights <= HEADROOM_FLOOR * (1 + 1e-9)).sum())
         pinned_note = (f"{pinned} at the floor ({HEADROOM_FLOOR:g}), read as cuts")
+    elif WEIGHTING == "loading":
+        pinned = idle
+        pinned_note = (f"{pinned} carrying under {FLOW_FLOOR:g} MW, read at {FLOW_FLOOR:g} MW "
+                       f"- the weakest ties, so the cuts")
     else:
         pinned = int((weights >= (1.0 / FLOW_FLOOR) * (1 - 1e-9)).sum())
         pinned_note = (f"{pinned} at the ceiling ({1.0 / FLOW_FLOOR:g}), carrying under "
@@ -549,8 +682,10 @@ def main() -> None:
         f" - and where it is nearly cut\n"
         f"              is the finding. Expect fewer of these than pinned corridors:\n"
         f"              two cuts on one boundary split the graph no further than one.)\n"
-        f"  wrote      {construction}\n"
-        f"             {clustering}"
+        + stats
+        + f"  wrote      {construction}\n"
+        f"             {clustering}\n"
+        + files
     )
 
 
