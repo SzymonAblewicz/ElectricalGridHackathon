@@ -1,0 +1,514 @@
+<title>Stopping a Cascade 5</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root{
+  --surface:#fcfcfb; --panel:#ffffff; --rail:#f4f4f1; --edge:#e6e5e1;
+  --ink:#0b0b0b; --ink-2:#52514e; --ink-3:#8a8983;
+  --wire:#dcdbd7;
+  --wind:#2a78d6; --wind-soft:#cde2fb;
+  --cut:#eda100; --cut-deep:#b97b00;
+  --calm:#b9c2bd; --busy:#6da7ec; --near:#fab219; --over:#d03b3b;
+  --good:#0ca30c; --dead:#b9b7b1;
+  --accent:#184f95;
+}
+*{box-sizing:border-box}
+html{color-scheme:light}
+body{
+  margin:0; background:var(--surface); color:var(--ink);
+  font-family:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1500px; margin:0 auto; padding:26px 22px 44px}
+
+header.top{display:flex; flex-wrap:wrap; gap:20px; align-items:flex-end;
+  justify-content:space-between; margin-bottom:18px}
+h1{font-size:28px; font-weight:700; line-height:1.08; margin:0 0 6px;
+  letter-spacing:-.015em; text-wrap:balance}
+.sub{color:var(--ink-2); margin:0; max-width:74ch; font-size:13.5px; line-height:1.62}
+.sub b{color:var(--ink); font-weight:600}
+.eyebrow{font-family:"IBM Plex Mono",monospace; font-size:10px; font-weight:600;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--ink-3); margin:0 0 9px}
+
+.controls{display:flex; flex-wrap:wrap; gap:8px; align-items:center}
+.ctrlbar{position:sticky; top:0; z-index:40; background:var(--surface);
+  border-bottom:1px solid var(--edge); margin:0 -22px 18px; padding:12px 22px;
+  display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center}
+select,button{font-family:inherit; font-size:13px; color:var(--ink);
+  background:var(--panel); border:1px solid #d5d4cf; border-radius:3px;
+  padding:8px 12px; cursor:pointer; transition:border-color .12s}
+button:hover,select:hover{border-color:var(--accent)}
+button:focus-visible,select:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+button.primary{background:var(--accent); border-color:var(--accent); color:#fff;
+  font-weight:600; min-width:88px}
+button.primary:hover{background:#0d366b}
+
+.scen{display:flex; flex-wrap:wrap; gap:0; margin-bottom:16px;
+  border:1px solid var(--edge); border-radius:4px; background:var(--panel); overflow:hidden}
+.scen > div{padding:11px 18px; border-right:1px solid var(--edge); flex:1 1 auto}
+.scen > div:last-child{border-right:0}
+.scen .k{display:block; font-family:"IBM Plex Mono",monospace; font-size:9.5px;
+  letter-spacing:.11em; text-transform:uppercase; color:var(--ink-3); margin-bottom:3px}
+.scen .v{font-size:15px; font-weight:600; font-variant-numeric:tabular-nums}
+.scen .v small{font-weight:400; color:var(--ink-2); font-size:12px}
+.mono{font-family:"IBM Plex Mono",monospace}
+
+.stage{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+@media (max-width:1020px){.stage{grid-template-columns:1fr}}
+
+.panel{background:var(--panel); border:1px solid var(--edge); border-radius:4px;
+  display:flex; flex-direction:column; overflow:hidden}
+.panel.good{border-color:#bcd6cf; box-shadow:0 0 0 1px #e4f0ec inset}
+.phead{padding:13px 17px 12px; border-bottom:1px solid var(--edge)}
+.ptitle{font-size:16.5px; font-weight:600; margin:0; line-height:1.25; letter-spacing:-.01em}
+.panel.good .ptitle{color:#0a6b52}
+.pnote{margin:3px 0 0; font-size:12px; color:var(--ink-3); line-height:1.5}
+
+.stats{display:grid; grid-template-columns:repeat(2,1fr); border-bottom:1px solid var(--edge)}
+.stat{padding:10px 14px; border-right:1px solid var(--edge)}
+.stat:last-child{border-right:0}
+.stat .lab{font-family:"IBM Plex Mono",monospace; font-size:9px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--ink-3); display:block; white-space:nowrap; margin-bottom:2px}
+.stat .val{font-size:20px; font-weight:600; font-variant-numeric:tabular-nums; line-height:1.2}
+.stat .val u{font-size:11px; font-weight:400; color:var(--ink-3); text-decoration:none; margin-left:2px}
+.stat .val.hot{color:var(--over)} .stat .val.ok{color:var(--good)}
+.stat .val.amber{color:var(--cut-deep)}
+
+.mapbox{position:relative; background:var(--panel)}
+svg.map{display:block; width:100%; height:auto}
+.tip{position:absolute; pointer-events:none; background:#111; color:#fff;
+  font-family:"IBM Plex Mono",monospace; font-size:10.5px; padding:5px 8px;
+  border-radius:3px; white-space:nowrap; opacity:0; transition:opacity .1s; z-index:5}
+
+.log{padding:11px 17px; font-size:12.5px; color:var(--ink-2); border-top:1px solid var(--edge);
+  min-height:60px; line-height:1.55}
+.log .phase{font-family:"IBM Plex Mono",monospace; font-size:9.5px; letter-spacing:.11em;
+  text-transform:uppercase; color:var(--ink-3); display:block; margin-bottom:4px}
+.log code{font-family:"IBM Plex Mono",monospace; font-size:11.5px; background:var(--rail);
+  padding:1px 4px; border-radius:2px; color:var(--ink)}
+.log .em{color:var(--over); font-weight:600}
+.log .go{color:var(--good); font-weight:600}
+
+.group{border-top:1px solid var(--edge); background:var(--rail)}
+.ghead{padding:9px 17px 6px; font-family:"IBM Plex Mono",monospace; font-size:9.5px;
+  letter-spacing:.11em; text-transform:uppercase; color:var(--ink-3);
+  display:flex; justify-content:space-between; gap:10px}
+.glist{max-height:160px; overflow-y:auto; padding:0 17px 12px}
+.grow{display:grid; grid-template-columns:62px 1fr 74px; gap:9px; align-items:center;
+  font-size:11.5px; padding:2.5px 0}
+.grow .nm{font-family:"IBM Plex Mono",monospace; color:var(--ink)}
+.grow .mw{text-align:right; font-variant-numeric:tabular-nums; color:var(--ink-2)}
+.bar{height:7px; background:#e8e7e3; border-radius:2px; overflow:hidden; position:relative}
+.bar i{display:block; height:100%; background:var(--wind); border-radius:2px}
+.bar i.c{background:var(--cut)}
+.gempty{padding:4px 17px 14px; font-size:12px; color:var(--ink-3)}
+
+.tlab{font-family:"IBM Plex Mono",monospace; font-size:9.5px; letter-spacing:.11em;
+  text-transform:uppercase; color:var(--ink-3)}
+.chips{display:flex; flex-wrap:wrap; gap:5px; flex:1 1 100%; padding-top:2px}
+@media (min-width:860px){.chips{flex:1 1 auto; padding-top:0}}
+.chip{font-family:"IBM Plex Mono",monospace; font-size:10.5px; padding:5px 9px;
+  border:1px solid #d5d4cf; border-radius:3px; background:var(--panel); color:var(--ink-2);
+  cursor:pointer; line-height:1.1; white-space:nowrap}
+.chip:hover{border-color:var(--accent); color:var(--ink)}
+.chip:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+.chip[aria-selected="true"]{background:var(--accent); border-color:var(--accent); color:#fff;
+  font-weight:600}
+.chip.act{border-color:#e0b36a}
+.chip[aria-selected="true"].act{background:var(--cut-deep); border-color:var(--cut-deep)}
+.tnow{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-3)}
+button.ghost{font-size:12px; padding:7px 10px; color:var(--ink-3)}
+
+.legend{margin-top:14px; display:flex; flex-wrap:wrap; gap:10px 26px; align-items:center;
+  font-size:11.5px; color:var(--ink-2); padding:12px 18px; background:var(--panel);
+  border:1px solid var(--edge); border-radius:4px}
+.lg{display:inline-flex; align-items:center; gap:7px}
+.lg i{width:22px; height:3px; border-radius:2px; display:inline-block; flex:none}
+.lg svg{flex:none; display:block}
+.lgt{font-family:"IBM Plex Mono",monospace; font-size:9.5px; letter-spacing:.11em;
+  text-transform:uppercase; color:var(--ink-3); margin-right:-14px}
+
+footer{margin-top:20px; color:var(--ink-3); font-size:12px; max-width:104ch; line-height:1.65}
+footer b{color:var(--ink-2); font-weight:600}
+</style>
+
+<div class="wrap">
+<h1>Stopping a Cascade</h1>
+
+<div class="ctrlbar" id="ctrlbar">
+  <select id="caseSel" aria-label="Starting outage"></select>
+  <select id="leftSel" aria-label="Left-hand method">
+    <option value="eir">Left: shift-factor group (today)</option>
+    <option value="nothing">Left: no remedy at all</option>
+    <option value="lp">Left: safe optimum (LP)</option>
+  </select>
+  <button id="backB" type="button" aria-label="Previous step">&#9664;&nbsp;Back</button>
+  <button id="stepB" type="button" class="primary">Next step&nbsp;&#9654;</button>
+  <button id="resetB" type="button">Reset</button>
+  <button id="playB" type="button" class="ghost" title="Advance automatically">Auto</button>
+  <span class="tnow" id="tmA"></span>
+</div>
+
+<div class="stage">
+  <section class="panel" id="pL">
+    <div class="phead"><h2 class="ptitle" id="tL"></h2></div>
+    <div class="stats" id="sL"></div>
+    <div class="mapbox"><svg class="map" id="mL" viewBox="0 0 520 660" role="img"
+      aria-label="Transmission map and wind farms, left-hand method"></svg><div class="tip" id="tipL"></div></div>
+  </section>
+  <section class="panel good" id="pR">
+    <div class="phead"><h2 class="ptitle" id="tR"></h2></div>
+    <div class="stats" id="sR"></div>
+    <div class="mapbox"><svg class="map" id="mR" viewBox="0 0 520 660" role="img"
+      aria-label="Transmission map and wind farms, net sensitivity with veto"></svg><div class="tip" id="tipR"></div></div>
+  </section>
+</div>
+
+
+</div>
+
+<script>
+(function(){
+"use strict";
+var START=4;  // which case this page opens on
+var D=null,C=null,F={l:[],r:[]},idx=0,timer=null,STEPS=1,LEFT="eir",RIGHT="veto";
+var $=function(s){return document.querySelector(s)};
+var NAMES={nothing:"No remedy",eir:"Shift factor constraint groups",
+  veto:"Net sensitivity constraint groups",lp:"Safe optimum (LP)"};
+
+var PX=[],PY=[],OKB=[],LINES=[],BID={},SC=1;
+function project(){
+  var xs=[],ys=[],i,b;
+  for(i=0;i<D.buses.length;i++){b=D.buses[i];
+    OKB[i]=(b.x!==null&&b.y!==null);
+    if(OKB[i]){xs.push(b.x);ys.push(b.y);}}
+  var x0=Math.min.apply(null,xs),x1=Math.max.apply(null,xs);
+  var y0=Math.min.apply(null,ys),y1=Math.max.apply(null,ys);
+  var k=Math.cos((y0+y1)/2*Math.PI/180);
+  var w=(x1-x0)*k,h=(y1-y0),pad=18,W=520-2*pad,H=660-2*pad;
+  var s=Math.min(W/w,H/h);SC=s;
+  var ox=pad+(W-w*s)/2, oy=pad+(H-h*s)/2;
+  for(i=0;i<D.buses.length;i++){
+    if(!OKB[i]){PX[i]=NaN;PY[i]=NaN;continue}
+    b=D.buses[i];
+    PX[i]=ox+((b.x-x0)*k)*s;
+    PY[i]=oy+(y1-b.y)*s;
+  }
+  for(i=0;i<D.branches.length;i++){
+    var e=D.branches[i];
+    BID[e.id]=i;
+    LINES[i]=(!e.t)&&OKB[e.a]&&OKB[e.b]&&
+      (Math.abs(PX[e.a]-PX[e.b])>0.01||Math.abs(PY[e.a]-PY[e.b])>0.01);
+  }
+}
+
+// Area proportional to megawatts, so radius goes as the square root.  The
+// factor is set by the largest farm in the week (741 MW) landing at ~11 px on
+// a 520-wide map; the floor keeps a 2 MW farm visible as a dot rather than
+// vanishing, which is the only place the scale is not strictly area-true.
+function rad(mw){return mw<=0.05?0:Math.max(1.2,Math.sqrt(mw)*0.40)}
+
+function build(svg){
+  var g=['<rect x="0" y="0" width="520" height="660" fill="#fcfcfb"/>'],i,e;
+  g.push('<g id="'+svg.id+'_L">');
+  for(i=0;i<D.branches.length;i++){
+    if(!LINES[i]){continue}
+    e=D.branches[i];
+    g.push('<line id="'+svg.id+'_e'+i+'" x1="'+PX[e.a].toFixed(1)+'" y1="'+PY[e.a].toFixed(1)+
+      '" x2="'+PX[e.b].toFixed(1)+'" y2="'+PY[e.b].toFixed(1)+
+      '" stroke="#dcdbd7" stroke-width="0.6" stroke-linecap="round"/>');
+  }
+  g.push('</g><g id="'+svg.id+'_T">');
+  for(i=0;i<D.branches.length;i++){
+    e=D.branches[i];
+    if(!e.t||!OKB[e.a]){continue}
+    g.push('<circle id="'+svg.id+'_t'+i+'" cx="'+PX[e.a].toFixed(1)+'" cy="'+PY[e.a].toFixed(1)+
+      '" r="4.4" fill="none" stroke="none" stroke-width="1.6"/>');
+  }
+  g.push('</g><g id="'+svg.id+'_W">');
+  for(i=0;i<D.wind.length;i++){
+    var b=D.wind[i].bus;
+    if(!OKB[b]){continue}
+    g.push('<circle id="'+svg.id+'_r'+i+'" cx="'+PX[b].toFixed(1)+'" cy="'+PY[b].toFixed(1)+
+      '" r="0" fill="none" stroke="#eda100" stroke-width="1.1" stroke-dasharray="2 2" opacity="0"/>');
+    g.push('<circle id="'+svg.id+'_w'+i+'" cx="'+PX[b].toFixed(1)+'" cy="'+PY[b].toFixed(1)+
+      '" r="0" fill="#2a78d6" fill-opacity="0.72" stroke="#184f95" stroke-width="0.6"'+
+      ' data-w="'+i+'"/>');
+  }
+  g.push('</g><g id="'+svg.id+'_A"></g>');
+  svg.innerHTML=g.join("");
+}
+
+// The two circuits the story is about are a few pixels of a 980-branch map, so
+// they are called out by name rather than left to be found.  Labels carry a
+// white halo because they sit on top of the network, and are nudged apart when
+// two land within a few pixels of each other.
+function annotate(svg,pre,f,outIdx){
+  var g=[],placed=[],i;
+  function put(x,y,txt,col,weight){
+    for(var j=0;j<placed.length;j++){
+      if(Math.abs(placed[j][0]-x)<52&&Math.abs(placed[j][1]-y)<11){y=placed[j][1]-11.5}
+    }
+    placed.push([x,y]);
+    g.push('<text x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" text-anchor="middle" '+
+      'font-family="IBM Plex Mono, monospace" font-size="9" font-weight="'+weight+'" '+
+      'paint-order="stroke" stroke="#fcfcfb" stroke-width="3.2" stroke-linejoin="round" '+
+      'fill="'+col+'">'+txt+'</text>');
+  }
+  // Three things get called out, and they are not the same thing:
+  //   the original N-1 outage      black  - the fault everything follows from
+  //   a line lost during the chain crimson - what the remedy cost
+  //   a line currently over rating red    - what is about to be lost
+  function cross(mx,my,col){
+    g.push('<g transform="translate('+mx.toFixed(1)+','+my.toFixed(1)+')">'+
+      '<circle r="6.2" fill="#fcfcfb" stroke="'+col+'" stroke-width="1.5"/>'+
+      '<path d="M-2.7,-2.7 L2.7,2.7 M2.7,-2.7 L-2.7,2.7" stroke="'+col+
+      '" stroke-width="1.7" stroke-linecap="round"/></g>');
+  }
+  function seg(bi,col,w,dash){
+    var e=D.branches[bi];
+    g.push('<line x1="'+PX[e.a].toFixed(1)+'" y1="'+PY[e.a].toFixed(1)+'" x2="'+
+      PX[e.b].toFixed(1)+'" y2="'+PY[e.b].toFixed(1)+'" stroke="'+col+
+      '" stroke-width="'+w+'" stroke-dasharray="'+dash+'" opacity=".9"/>');
+    return [(PX[e.a]+PX[e.b])/2,(PY[e.a]+PY[e.b])/2];
+  }
+  var e,m,bi;
+  // lines lost after the original fault - drawn first so the outage sits on top
+  for(i=0;i<f.dead.length;i++){
+    bi=BID[f.dead[i]];
+    if(bi===undefined||bi===outIdx||!LINES[bi]){continue}
+    m=seg(bi,"#b32d22",2.4,"5 3.5");
+    cross(m[0],m[1],"#b32d22");
+    put(m[0],m[1]-10.5,D.branches[bi].id+"  lost","#b32d22",600);
+  }
+  if(outIdx>=0&&LINES[outIdx]){
+    m=seg(outIdx,"#0b0b0b",2.4,"5 3.5");
+    cross(m[0],m[1],"#0b0b0b");
+    put(m[0],m[1]-10.5,D.branches[outIdx].id+"  N-1","#0b0b0b",600);
+  }
+  for(i=0;i<f.over.length&&i<4;i++){
+    bi=BID[f.over[i]];
+    if(bi===undefined||!LINES[bi]){continue}
+    e=D.branches[bi];
+    put((PX[e.a]+PX[e.b])/2,(PY[e.a]+PY[e.b])/2-9,
+        e.id+"  "+(100*(f.load[bi]||0)).toFixed(0)+"%","#d03b3b",600);
+  }
+  document.getElementById(pre+'_A').innerHTML=g.join("");
+}
+
+function paint(svg,pre,f,wind){
+  var i,el,v,col,w,dash,op;
+  var dset={},tset={},j;
+  for(j=0;j<f.dead.length;j++){dset[f.dead[j]]=1}
+  for(j=0;j<f.trips.length;j++){tset[f.trips[j]]=1}
+  for(i=0;i<D.branches.length;i++){
+    var e=D.branches[i],id=e.id,hot=dset[id];
+    if(e.t){
+      el=document.getElementById(pre+'_t'+i);
+      if(!el){continue}
+      v=f.load[i]||0;
+      if(hot){el.setAttribute("stroke","#b9b7b1");el.setAttribute("stroke-dasharray","2 2");
+        el.setAttribute("opacity",".9")}
+      else if(v>1.001){el.setAttribute("stroke","#d03b3b");el.removeAttribute("stroke-dasharray");
+        el.setAttribute("opacity","1")}
+      else if(v>0.9){el.setAttribute("stroke","#fab219");el.removeAttribute("stroke-dasharray");
+        el.setAttribute("opacity",".9")}
+      else{el.setAttribute("stroke","none")}
+      continue;
+    }
+    if(!LINES[i]){continue}
+    el=document.getElementById(pre+'_e'+i);
+    if(!el){continue}
+    if(hot){col="#b9b7b1";w=1.0;dash="3 3";op=.85}
+    else{
+      v=f.load[i]||0;
+      if(v>1.001){col="#d03b3b";w=3.4;dash="";op=1}
+      else if(v>0.9){col="#fab219";w=2.1;dash="";op=1}
+      else if(v>0.6){col="#6da7ec";w=1.3;dash="";op=.9}
+      else{col="#dcdbd7";w=0.75;dash="";op=1}
+    }
+    el.setAttribute("stroke",col);
+    el.setAttribute("stroke-width",w);
+    el.setAttribute("opacity",op);
+    if(dash){el.setAttribute("stroke-dasharray",dash)}else{el.removeAttribute("stroke-dasharray")}
+  }
+  var before=f.wb,after=wind;
+  for(i=0;i<D.wind.length;i++){
+    if(!OKB[D.wind[i].bus]){continue}
+    var a=after[i]||0, b0=before[i]||0, cut=b0-a;
+    el=document.getElementById(pre+'_w'+i);
+    var rg=document.getElementById(pre+'_r'+i);
+    if(!el){continue}
+    el.setAttribute("r",rad(a).toFixed(2));
+    if(cut>0.05){
+      el.setAttribute("fill","#eda100"); el.setAttribute("stroke","#b97b00");
+      rg.setAttribute("r",rad(b0).toFixed(2)); rg.setAttribute("opacity","1");
+    }else{
+      el.setAttribute("fill","#2a78d6"); el.setAttribute("stroke","#184f95");
+      rg.setAttribute("opacity","0");
+    }
+  }
+}
+
+function frames(arm){
+  var a=C.arms[arm],out=[],i,r;
+  for(i=0;i<a.rounds.length;i++){
+    r=a.rounds[i];
+    var base={r:r.round,dead:r.dead,cutTot:r.cut_MW,isl:r.islands,risk:r.load_at_risk,
+      over:r.over,wb:r.wind_before,imw:r.instructed_MW||0,nodes:r.instructed_nodes||0};
+    out.push(Object.assign({},base,{phase:"stress",load:r.loading,trips:[],w:r.wind_before}));
+    out.push(Object.assign({},base,{phase:"act",load:r.loading_after||r.loading,
+      trips:r.trips||[],w:r.wind_after,cutTot:r.cut_MW+(r.instructed_MW||0)}));
+  }
+  var last=a.rounds[a.rounds.length-1];
+  out.push({r:last.round,phase:"end",load:last.loading_after||last.loading,dead:a.dead,
+    trips:[],cutTot:a.total_cut,isl:a.islands,risk:a.load_at_risk,over:[],
+    wb:last.wind_after,w:last.wind_after,imw:0,nodes:0,fin:1});
+  return out;
+}
+
+function stats(el,f){
+  var lost=f.dead.length-1, tot=0, i;
+  for(i=0;i<f.w.length;i++){tot+=f.w[i]}
+  var pc=C.windTotal>0?100*f.cutTot/C.windTotal:0;
+  el.innerHTML=
+   '<div class="stat"><span class="lab">line outages</span><span class="val '+(lost?"hot":"ok")+'">'+lost+'</span></div>'+
+   '<div class="stat"><span class="lab">wind cut</span><span class="val '+(f.cutTot>0.05?"amber":"")+'">'+
+     Math.round(f.cutTot).toLocaleString()+'<u>MW · '+pc.toFixed(0)+'%</u></span></div>';
+}
+
+function grouplist(hEl,lEl,f){
+  var rows=[],i,b0,a,cut,mx=0;
+  for(i=0;i<D.wind.length;i++){
+    b0=f.wb[i]||0; a=f.w[i]||0; cut=b0-a;
+    if(cut>0.05){rows.push({i:i,cut:cut,before:b0,after:a}); if(b0>mx){mx=b0}}
+  }
+  rows.sort(function(p,q){return q.cut-p.cut});
+  hEl.innerHTML='<span>constraint group — this instruction</span><span>'+
+    (rows.length?rows.length+' farms · '+Math.round(f.imw||rows.reduce(function(s,r){return s+r.cut},0))+' MW':'—')+'</span>';
+  if(!rows.length){lEl.innerHTML='<div class="gempty">No farm is being dispatched down at this step.</div>';return}
+  lEl.innerHTML=rows.slice(0,40).map(function(r){
+    var w1=100*r.after/mx, w2=100*r.cut/mx;
+    return '<div class="grow"><span class="nm">'+D.wind[r.i].id+'</span>'+
+      '<span class="bar"><i style="width:'+w1.toFixed(1)+'%;display:inline-block;vertical-align:top"></i>'+
+      '<i class="c" style="width:'+w2.toFixed(1)+'%;display:inline-block;vertical-align:top"></i></span>'+
+      '<span class="mw">−'+r.cut.toFixed(1)+' MW</span></div>';
+  }).join("")+(rows.length>40?'<div class="gempty">+'+(rows.length-40)+' more farms</div>':"");
+}
+
+function logline(el,f,arm){
+  var s="";
+  if(f.fin){
+    var lost=f.dead.length-1;
+    s='<span class="phase">settled · round '+f.r+'</span>';
+    if(lost===0){s+='<span class="go">The chain never started.</span> Nothing tripped after the original fault. '+
+      Math.round(f.cutTot)+' MW of wind was instructed and the grid is whole.';}
+    else{s+='<span class="em">'+lost+' line'+(lost>1?"s":"")+' lost</span>'+
+      (f.isl>0?', grid split into '+(f.isl+1)+' pieces, <span class="em">'+Math.round(f.risk)+
+      ' MW of demand with nothing left to serve it</span>':', grid still whole')+'. '+
+      Math.round(f.cutTot)+' MW of wind cut.';}
+  } else if(f.phase==="stress"){
+    s='<span class="phase">round '+f.r+' · flows recomputed</span>';
+    s+='<span class="em">'+f.over.length+' circuit'+(f.over.length===1?"":"s")+' over rating</span>';
+    if(f.over.length){s+=' — '+f.over.slice(0,3).map(function(x){return '<code>'+x+'</code>'}).join(" ")+
+      (f.over.length>3?' +'+(f.over.length-3)+' more':'');}
+  } else {
+    s='<span class="phase">round '+f.r+' · remedy dispatched</span>';
+    if(arm==="nothing"){s+='No action taken. ';}
+    else if(f.imw>0){s+='Cut <b>'+Math.round(f.imw)+' MW</b> across <b>'+f.nodes+' farm'+
+      (f.nodes===1?"":"s")+'</b>. ';}
+    if(f.trips.length){
+      var was={},k;
+      for(k=0;k<f.over.length;k++){was[f.over[k]]=1}
+      var caused=f.trips.filter(function(t){return !was[t]});
+      var failed=f.trips.filter(function(t){return was[t]});
+      if(caused.length){s+='<span class="em">The instruction pushed '+
+        caused.map(function(x){return '<code>'+x+'</code>'}).join(" ")+
+        ' — inside its rating a moment ago — over the limit, and it trips.</span>';}
+      if(failed.length){s+=(caused.length?' ':'')+'<span class="em">'+
+        failed.map(function(x){return '<code>'+x+'</code>'}).join(" ")+
+        ' was not brought back in time and trips.</span>';}
+    } else {s+='<span class="go">Nothing trips.</span>';}
+  }
+  el.innerHTML=s;
+}
+
+function render(){
+  var fl=F.l[Math.min(idx,F.l.length-1)],fr=F.r[Math.min(idx,F.r.length-1)];
+  paint($("#mL"),"mL",fl,fl.w); paint($("#mR"),"mR",fr,fr.w);
+  annotate($("#mL"),"mL",fl,C.outIdx); annotate($("#mR"),"mR",fr,C.outIdx);
+  stats($("#sL"),fl); stats($("#sR"),fr);
+  $("#tmA").textContent=(idx+1)+" of "+STEPS;
+  $("#backB").disabled=(idx===0);
+  $("#stepB").disabled=(idx>=STEPS-1);
+}
+
+// One chip per frame, labelled with what that frame is: the flows after a trip,
+// or the remedy dispatched against them.  A presenter needs to land on an exact
+// moment and talk over it, which a drag-handle on a thin track does not give.
+function hover(svgId,tipId){
+  var svg=$("#"+svgId),tip=$("#"+tipId);
+  svg.addEventListener("mousemove",function(ev){
+    var t=ev.target,id=t.id||"";
+    var m=id.match(/_([ewt])(\d+)$/);
+    if(!m){tip.style.opacity=0;return}
+    var f=(svgId==="mL"?F.l:F.r)[Math.min(idx,(svgId==="mL"?F.l:F.r).length-1)];
+    var i=+m[2],txt;
+    if(m[1]==="w"){
+      var b0=f.wb[i]||0,a=f.w[i]||0;
+      txt=D.wind[i].id+"  "+a.toFixed(1)+" MW of "+D.wind[i].p_nom.toFixed(0)+" MW"+
+        (b0-a>0.05?"   cut "+(b0-a).toFixed(1):"");
+    } else {
+      var e=D.branches[i];
+      txt=e.id+"  "+(100*(f.load[i]||0)).toFixed(1)+"% of "+e.s.toFixed(0)+" MVA";
+    }
+    tip.textContent=txt;
+    var r=svg.getBoundingClientRect();
+    tip.style.left=Math.min(ev.clientX-r.left+12,r.width-tip.offsetWidth-6)+"px";
+    tip.style.top=(ev.clientY-r.top-26)+"px";
+    tip.style.opacity=1;
+  });
+  svg.addEventListener("mouseleave",function(){tip.style.opacity=0});
+}
+
+function load(ci){
+  C=D.cases[ci];
+  var w0=C.arms.nothing.rounds[0].wind_before||[];
+  C.windTotal=w0.reduce(function(s,v){return s+v},0);
+  C.outIdx=BID[C.outage]===undefined?-1:BID[C.outage];
+  F.l=frames(LEFT); F.r=frames(RIGHT);
+  $("#tL").textContent=NAMES[LEFT];
+  $("#tR").textContent=NAMES[RIGHT];
+  STEPS=Math.max(F.l.length,F.r.length);
+  idx=0; render();
+}
+
+function stop(){if(timer){clearInterval(timer);timer=null}$("#playB").textContent="Auto"}
+function step(d){var n=idx+(d||1); if(n<0||n>STEPS-1){stop();return} idx=n; render()}
+function play(){
+  if(timer){stop();return}
+  if(idx>=STEPS-1){idx=0;render()}
+  $("#playB").textContent="Stop";
+  timer=setInterval(function(){if(idx>=STEPS-1){stop();return}idx++;render()},1800);
+}
+
+fetch("replay.json").then(function(r){return r.json()}).then(function(j){
+  D=j; project(); build($("#mL")); build($("#mR"));
+  hover("mL","tipL"); hover("mR","tipR");
+  var cs=$("#caseSel");
+  cs.innerHTML=D.cases.map(function(c,i){
+    return '<option value="'+i+'">'+c.outage+' · hour '+c.hour+'</option>'}).join("");
+  cs.onchange=function(){stop();load(+cs.value)};
+  $("#leftSel").onchange=function(){stop();LEFT=$("#leftSel").value;load(+cs.value)};
+  $("#stepB").onclick=function(){stop();step(1)};
+  $("#backB").onclick=function(){stop();step(-1)};
+  $("#playB").onclick=play;
+  $("#resetB").onclick=function(){stop();idx=0;render()};
+  document.addEventListener("keydown",function(ev){
+    if(ev.key==="ArrowRight"){stop();step(1)}
+    else if(ev.key==="ArrowLeft"){stop();step(-1)}
+  });
+  cs.value=START; load(START);
+}).catch(function(e){$("#ctrlbar").textContent="Could not load replay.json — "+e});
+})();
+</script>

@@ -1,0 +1,142 @@
+\newpage
+\section{Net sensitivity: a constraint group that cannot break what it did not look at}
+
+\subsection*{Shift factor, revisited}
+
+Every quantity a constraint group is built from is already in hand: row $e$ of
+the sensitivity matrix (\S\ref{app:dump}, Stage 4) gives, for branch $e$, the
+change in $|f_e|$ per MW curtailed at every wind node --- signed so that
+positive means \emph{relief}. [WDT]'s method (Appendix 2, p.\,72) reads a
+\emph{single} row: pick the one congested circuit, rank nodes down that row,
+keep whatever clears a threshold $\tau$.
+\begin{equation}
+  \text{group}(e) \;=\; \{\, n : \text{sensitivity}_{e,n} \,\ge\, \tau \,\},
+  \qquad \tau = \pTau .
+\end{equation}
+That is one row of a $\gne\times\gnwind$ matrix, chosen and read in isolation.
+Nothing in it depends on any other row --- so nothing in it \emph{knows} about
+any other row.
+
+\subsection*{Sensitivities add. Net sensitivity is nothing more than that.}
+
+If several branches are over their rating at once, a node's total usefulness is
+just its sensitivities to each of them, summed:
+\begin{equation}
+  S_{\text{net}}(n) \;=\; \sum_{e\,\in\,\text{Over}} \text{sensitivity}_{e,n},
+  \qquad \text{Over} = \{\, e : |f_e| > s_e \,\}.
+  \label{eq:netsens}
+\end{equation}
+No new computation --- the matrix already holds every term on the right. A
+node relieving three circuits a little now outranks one relieving only the
+worst circuit a lot; a one-line group is unaffected, since \eqref{eq:netsens}
+collapses to the single term $\tau$ was already thresholding.
+
+\subsection*{Why net sensitivity alone is not enough}
+
+Ranking by $S_{\text{net}}$ still asks only \emph{"does this node help the
+branches I am watching."} It says nothing about the $\gne - |\text{Over}|$
+branches it is not watching. Tested directly: ranking by $S_{\text{net}}$ with
+no further check pushed a branch that was inside its rating over it in
+\pOvlBrokeEvents\ of \pN\ events --- \emph{worse} than the threshold method it
+replaces. Concentrating a whole instruction on the single most useful node
+moves the rest of the network harder than the same megawatts spread out.
+\textbf{The safety was never going to come from the ranking.} It has to come
+from a separate rule.
+
+\subsection*{The veto}
+
+A node's cut is capped, not by $\tau$, but by the largest amount that leaves
+\emph{every live branch} $k$ --- not just the ones in Over --- inside its
+rating, and leaves nothing already over made worse:
+\begin{equation}
+  x_n^{\max} \;=\; \min_{k \,:\, \text{sensitivity}_{k,n} < 0}
+  \;\frac{\text{rating}_k - |f_k|}{|\text{sensitivity}_{k,n}|},
+  \qquad
+  \text{lim}_k = \max\!\big(|f_k|,\ \text{rating}_k\big) \text{ for } k \in \text{Over}.
+  \label{eq:veto}
+\end{equation}
+Every branch in the network enters this minimum, whether it is congested or
+not --- because the branch a bad instruction breaks is, by definition, one
+that was not being watched. A node is included in the group only up to
+$x_n^{\max}$; ordering by $S_{\text{net}}$ decides \emph{who goes first},
+\eqref{eq:veto} decides \emph{how far they may go}. The two are independent
+checks and the results below keep them separate.
+
+\begin{center}\small
+\begin{tabular}{lrrrr}
+\toprule
+& \textbf{cleared} & \textbf{events broke a line} & \textbf{lines broken} & \textbf{median group}\\
+\midrule
+Shift-factor threshold (today) & \pEirCleared\% & \pEirBrokeEvents & \pEirBrokeLines & \pEirMedNodes\ nodes\\
+Net sensitivity + veto & \pVetoCleared\% & \pVetoBrokeEvents & \pVetoBrokeLines & \pVetoMedNodes\ node\\
+\bottomrule
+\end{tabular}
+\end{center}
+\pN\ (outage, hour) events, every single-branch outage at every hour of the
+week. On the events both methods clear, the veto method cuts
+\pSavedMW\ MW less wind --- \pSavedPct\% --- because it targets the effective
+node instead of splitting pro-rata across \pEirMedNodes. The proven optimum
+(the same rule in \eqref{eq:veto}, solved exactly rather than applied greedily)
+clears \pLpCleared\%; a safe remedy provably exists in \pLpFeasible\% of events.
+
+\subsection*{Fixed, and precomputable, per outage}
+
+Neither \eqref{eq:netsens} nor \eqref{eq:veto} depends on the hour or the
+weather --- both are read off the sensitivity matrix, which is topology and
+reactance only. So the group for \emph{every} single-branch outage can be
+built once, offline, and looked up: \pTripsOutages\ outages produce
+\pTripsCircuits\ distinct circuits ever at risk, \pTrips\ (outage, circuit)
+lookup rows in total. \pVetoedFromEir\ of the \pTripsCircuits-circuit
+threshold method's own \pEirMedNodes-node-median memberships
+(\pVetoedFromEirPct\% of every member ever proposed) fail \eqref{eq:veto} and
+are excluded before dispatch. Only the live flow and the final MW instruction
+are computed online.
+
+\subsection*{Finding 1 --- curtailment is concentrated on a handful of nodes}
+
+Running \eqref{eq:veto} across every one of the \pN\ events and tracking which
+nodes the safe remedy actually dispatches, not merely which ones qualify as
+candidates: no node is cut in \emph{zero} events --- the least-used one is
+still asked \pMinCutEvents\ times out of \pN --- so there is no node that can
+be declared exempt outright. What the same sweep shows instead is
+concentration. The \textbf{5} busiest nodes account for \pTopFivePct\% of every
+megawatt curtailed anywhere in the study; the top 10 for \pTopTenPct\%; the top
+20 for \pTopTwentyPct\%. \pRareN\ of \pWindN\ nodes --- \pRarePct\% of the fleet,
+\pRareMW\ MW of nameplate, \pRareFleetPct\% of the \pWindFleetMW\ MW installed
+--- are cut in under 1\% of the \pN\ events, and the median node across the
+whole fleet is cut in only \pMedEventsPct\% of them, keeping \pMedKeptPct\% of
+whatever it was offering when it was. Overall the safe remedy cuts
+\pOverallCutPct\% of all wind offered across the entire N--1 study:
+\pTotalCutMW\ MW of \pTotalOfferedMW\ MW. \textbf{For the great majority of
+the fleet, a constraint group is something that applies to them on a handful
+of days a year, not a standing limit on their output.}
+
+\subsection*{Finding 2 --- stopping the cascade}
+
+Follow the chain past the first trip: whatever is left over its rating after
+the remedy trips too, and the flows are recomputed with it also out of
+service. \pCascN\ starting outages, run to exhaustion under four remedies:
+
+\begin{center}\small
+\begin{tabular}{lrrr}
+\toprule
+& \textbf{lines lost, total} & \textbf{outages that spread} & \textbf{islanded}\\
+\midrule
+No remedy & \pNothingLost & \pNothingSpread\ / \pCascN & \pNothingIsl\\
+Shift-factor threshold & \pCEirLost & \pCEirSpread\ / \pCascN & \pCEirIsl\\
+Net sensitivity + veto & \pCVetoLost & \pCVetoSpread\ / \pCascN & \pCVetoIsl\\
+Safe optimum (LP) & \pCLpLost & \pCLpSpread\ / \pCascN & \pCLpIsl\\
+\bottomrule
+\end{tabular}
+\end{center}
+\note{This sample is deliberately enriched with the events where a remedy was
+already seen to break something, so the spread rate above is not the rate for
+a uniformly random N--1 --- it is a stress test, by design.}
+
+\medskip
+\note{\textbf{Limits.} No thermal clock: a branch over its rating at the end
+of a round is taken to trip, the pessimistic reading, since real protection is
+time-overcurrent. The veto is exact only inside the DC linearisation it shares
+with the rest of this document. Weather is synthetic, so the event count and
+the MW figures move with real data; \emph{which} circuits are ever at risk does
+not, since it follows from $K$, $B$ and the ratings alone.}
