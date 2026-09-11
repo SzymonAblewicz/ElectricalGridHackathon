@@ -7,6 +7,7 @@
 \usepackage{array}
 \usepackage{xcolor}
 \usepackage{microtype}
+\usepackage{pdfpages}
 \usepackage[colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black]{hyperref}
 
 \definecolor{ink}{HTML}{0B0B0B}
@@ -24,6 +25,22 @@
 \pagestyle{empty}
 
 \begin{document}
+
+% ---- title ---------------------------------------------------
+\thispagestyle{empty}
+\vspace*{\fill}
+\begin{center}
+{\LARGE\bfseries Tackling the problem of constraint group construction\\[3mm]
+to reduce wind energy waste and defend against cascading outages}
+
+\vspace{10mm}
+{\large Team 6}
+\end{center}
+\vspace*{\fill}
+\newpage
+
+% ---- teammate slides, shown first ----------------------------
+\includepdf[pages=-,fitpaper=true]{figures/vilmos.pdf}
 
 % ===============================================================
 \section{The shift factor, as it is used today}
