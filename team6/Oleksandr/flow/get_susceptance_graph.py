@@ -69,7 +69,7 @@ import flowmath  # noqa: E402
 # ---- what to run ---- #
 
 CASE = "TYTFS2024_WP2024_V35_transmission"
-K = 6                         # clusters wanted
+K = 33                         # clusters wanted
 EMBEDDING = "sym"             # "sym" | "rw" | "unnorm"
 
 EXTRA = 30                     # eigenpairs beyond K, so the gap after the K-th is visible
