@@ -56,7 +56,7 @@ from scipy.sparse import csgraph  # noqa: E402
 
 import graph_lib as gwg  # noqa: E402
 import spectrum as spec  # noqa: E402
-from get_flow_graph import out_dir, quiet  # noqa: E402
+from get_flow_graph import cluster_and_map, cluster_report, out_dir, quiet  # noqa: E402
 
 # flowmath.py ships with the participant kit, which is not on the path by default.
 # gwg.PYPSA_DIR is <repo>/grid_TF_Wind/data/pypsa, so its grandparent is grid_TF_Wind.
@@ -68,11 +68,12 @@ import flowmath  # noqa: E402
 
 # ---- what to run ---- #
 
-CASE = "TYTFS2024_WP2033_V35_transmission"
+CASE = "TYTFS2024_WP2024_V35_transmission"
 K = 6                         # clusters wanted
 EMBEDDING = "sym"             # "sym" | "rw" | "unnorm"
 
-EXTRA = 5                     # eigenpairs beyond K, so the gap after the K-th is visible
+EXTRA = 30                     # eigenpairs beyond K, so the gap after the K-th is visible
+RESTARTS = 10                 # k-means++ draws; best of them is kept
 
 WEIGHTING = "susceptance"     # fixed; the name the outputs are filed under
 
@@ -107,6 +108,7 @@ def main() -> None:
     if weights.isna().any():
         missing = branches["name"][weights.isna().to_numpy()].tolist()
         raise ValueError(f"no susceptance for {len(missing)} branches: {missing[:5]}")
+    rated = branches              # s_nom still in MVA - the cut-corridor table reads from this
     branches = branches.assign(s_nom=weights.to_numpy(float))
 
     # A generator edge has no susceptance - a machine is not a branch of the linear network.
@@ -125,7 +127,8 @@ def main() -> None:
     gwg.save(A, construction, WEIGHTING)
     # Estimated for the plot only, same as get_weighted_graph.py's own
     # construction graph - the CSV above keeps the real, ungeocoded x/y.
-    gwg.plot(A, gwg.geocode(node_index, branches), construction / f"graph_{WEIGHTING}.pdf")
+    placed = gwg.geocode(node_index, branches)
+    gwg.plot(A, placed, construction / f"graph_{WEIGHTING}.pdf")
 
     M = L if EMBEDDING == "unnorm" else L_sym
     n_nodes = A.shape[0]
@@ -149,6 +152,15 @@ def main() -> None:
     spec.plot(values, suggested, clustering / f"{stem}.pdf",
               f"{CASE} +generators — {EMBEDDING}, {WEIGHTING}")
 
+    # The partition and its map, by the flow scripts' shared helper - cluster.py's own steps -
+    # so a map drawn here and one drawn by cluster.py mean the same thing. This graph does not
+    # depend on a dispatch, so there is exactly one of it per case: run it once and that is it.
+    res = cluster_and_map(
+        A, node_index, placed, rated, vectors, D.diagonal(), k=K, restarts=RESTARTS,
+        embedding=EMBEDDING, folder=clustering, run=f"{EMBEDDING}_{WEIGHTING}_k{K}",
+        title=f"{CASE} +generators — {EMBEDDING}, {WEIGHTING}, k = {K}")
+    stats, files = cluster_report(res, k=K, restarts=RESTARTS, weight="susceptance")
+
     dropped = sorted(set(buses["name"]) - set(node_index["name"]))
     listing = "\n".join(
         f"    {i + 1:>2}. {v:>13.6g}"
@@ -171,8 +183,10 @@ def main() -> None:
         f"{listing}\n"
         f"             (the gap after the 1st is structural on a connected graph, so it is\n"
         f"              excluded from the suggestion)\n"
-        f"  wrote      {construction}\n"
-        f"             {clustering}"
+        + stats
+        + f"  wrote      {construction}\n"
+        f"             {clustering}\n"
+        + files
     )
 
 

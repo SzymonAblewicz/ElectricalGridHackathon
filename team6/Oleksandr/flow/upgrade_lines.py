@@ -1,12 +1,13 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["numpy", "pandas", "matplotlib", "pypsa"]
+# dependencies = ["numpy", "pandas", "scipy>=1.14", "matplotlib", "pypsa"]
 # ///
 """Reinforce the most loaded line, re-run the power flow, repeat until nothing is overloaded.
 
 A DC power flow on a dispatch you choose, then a greedy reinforcement loop: find the line
-carrying the largest fraction of its rating, move it one rung up the voltage ladder, run
-`n.lpf()` again, and keep going until no branch exceeds THRESHOLD.
+carrying the largest fraction of its rating, move it - the whole line, every circuit of it -
+one rung up the voltage ladder, run `n.lpf()` again, and keep going until no branch exceeds
+THRESHOLD or MAX_UPGRADES steps have been taken.
 
     110 -> 220 -> 275 -> 380 kV
 
@@ -28,6 +29,16 @@ and 110 -> 220 doubles the rating. The line's own voltage class is tracked in a 
 the network rather than by retagging its end buses, because retagging bus0 silently
 reinterprets every *other* line on that bus at the new voltage and leaves the transformers
 feeding it at the wrong ratio, with no PyPSA consistency check to catch it.
+
+Upgrades are made to whole lines, never to one circuit of one. A row of `lines.csv` is a
+circuit, and a line is the set of rows at one voltage that belong to the same corridor: the
+parallel circuits between the same two buses (`1121-4451-1` and `-2`), joined with any
+segment that meets them at a pass-through bus - one with exactly two lines on it and no
+transformer, generator, load or link, which is a tee point on a route rather than a
+substation. On WP2033 that is 41 bus pairs with parallel circuits and 36 routes through tee
+points. When any circuit is the most loaded, the whole line steps together, so no corridor is
+left half at 110 kV and half at 220. One line moving one rung is one step against
+MAX_UPGRADES, however many circuits it touches.
 
 **Read this before reading the results.** `x` and `r` are left alone, so the impedances do not
 move, and a DC power flow routes power by impedance alone. The consequence is that the flows
@@ -76,9 +87,14 @@ sys.path.insert(0, str(FOLDER.parent))  # get_weighted_graph lives one level up
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pypsa  # noqa: E402
+from scipy.sparse import coo_array, csgraph  # noqa: E402
 
 import get_flow_graph as gfg  # noqa: E402
 import graph_lib as gwg  # noqa: E402
+
+# After graph_lib, which sets the Agg backend on import - written to a file, never shown.
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.collections import LineCollection  # noqa: E402
 
 
 # ---- what to run ---- #
@@ -87,14 +103,14 @@ import graph_lib as gwg  # noqa: E402
 # TYTFS2024_{WP,SV}{2024,2033}_V35_{transmission,full}. The northwest_* cases do not work,
 # for the reason get_weighted_graph.py gives: their buses.csv lacks the BUS_COLUMNS.
 
-CASE = "TYTFS2024_WP2033_V35_transmission"
+CASE = "TYTFS2024_WP2024_V35_transmission"
 
 # Generator name -> the fraction of its power it runs at, 0 to 1. Anything not named here
 # runs at DEFAULT_DISPATCH. Names are the PSS/E ids in generators.csv - "10271-1", "33174-1",
 # "90540-LH" - and an unknown one is an error rather than a silent no-op, because a typo in a
 # generator id is otherwise indistinguishable from a unit that simply does not move.
 DISPATCH: dict[str, float] = {}
-DEFAULT_DISPATCH = 1.0
+DEFAULT_DISPATCH = 1
 
 # What the fraction is a fraction *of*.
 #   "p_nom"  nameplate. 1.0 is every unit flat out; on WP2033 that is 26,266 MW against
@@ -107,16 +123,19 @@ THRESHOLD = 0.75
 
 BALANCE = "scale_loads"       # "scale_loads" | "none" - read the docstring before changing
 
-# A cap, not a target. Every upgrade strictly raises one line's rating and the flows never
-# move, so the loop cannot cycle - but an unreachable threshold would otherwise be found only
-# by waiting for every line in the network to reach 380 kV.
-MAX_UPGRADES = 1000
+# The loop stops after this many steps, where a step is one whole line moving one rung,
+# however many circuits that line has. Every step strictly raises ratings and the flows never
+# move, so the loop cannot cycle; this is where it stops if the threshold is not reached first.
+MAX_UPGRADES = 100
 
 
 # The voltages that exist in these cases, in order. A line steps to the next one strictly
 # above its current voltage, which both walks the ladder and snaps the 150 / 260 / 365 kV
 # interconnector artefacts onto it.
-LADDER = (110.0, 220.0, 275.0, 380.0)
+LADDER = (110.0, 220.0, 275.0, 380.0, 440)
+
+# An upgraded circuit is drawn in the colour of the rung it finished on; graph_lib's palette.
+RUNG_COLOURS = {220.0: "#2a9d8f", 275.0: "#2c6fbb", 380.0: "#d1495b"}
 
 BASES = ("p_nom", "p_set")
 
@@ -186,29 +205,72 @@ def next_voltage(v: float) -> float | None:
     return next((rung for rung in LADDER if rung > v), None)
 
 
+# ---- whole lines ---- #
+
+
+def line_groups(network) -> pd.Series:
+    """Label every circuit in `lines.csv` with the whole line it belongs to.
+
+    Two circuits are one line when they run between the same two buses, or when they meet at
+    a pass-through bus: exactly two lines on it and nothing else - no transformer, generator,
+    load or link - which is a tee point on a route rather than a substation an upgrade would
+    stop at. Joined transitively, so a parallel pair running into a tee point is one line with
+    the segment beyond it. Only circuits at the same voltage are ever joined. Every circuit in
+    these cases has matching ends, so that already holds, but it is the requirement, so it is
+    checked rather than inherited.
+    """
+    lines = network.lines
+    voltage = lines["bus0"].map(network.buses["v_nom"])
+    busy = (set(network.transformers["bus0"]) | set(network.transformers["bus1"])
+            | set(network.generators["bus"]) | set(network.loads["bus"])
+            | set(network.links["bus0"]) | set(network.links["bus1"]))
+
+    pairs: list[tuple[str, str]] = []
+    corridor = pd.Series(np.where(lines["bus0"] < lines["bus1"],
+                                  lines["bus0"] + "|" + lines["bus1"],
+                                  lines["bus1"] + "|" + lines["bus0"]), index=lines.index)
+    for members in corridor.groupby(corridor).groups.values():
+        pairs += zip(members[:-1], members[1:])
+    ends = pd.concat([lines["bus0"], lines["bus1"]])
+    for bus, members in ends.groupby(ends).groups.items():
+        if len(members) == 2 and bus not in busy:
+            pairs.append((members[0], members[1]))
+    pairs = [(a, b) for a, b in pairs if voltage[a] == voltage[b]]
+
+    position = pd.Series(np.arange(len(lines)), index=lines.index)
+    i = position.reindex([a for a, _ in pairs]).to_numpy(int)
+    j = position.reindex([b for _, b in pairs]).to_numpy(int)
+    graph = coo_array((np.ones(len(pairs)), (i, j)), shape=(len(lines), len(lines)))
+    _, label = csgraph.connected_components(graph, directed=False)
+    return pd.Series(label, index=lines.index)
+
+
 # ---- loading ---- #
 
 
 def branch_table(network) -> pd.DataFrame:
-    """One row per line and transformer: kind, rating, and the voltage a line sits at.
+    """One row per line and transformer: kind, rating, the voltage a line sits at, its group.
 
-    Built once. `s_nom` is mutated in place by the loop and the flow is refreshed each
-    iteration; everything else here is fixed for the run.
+    Built once. `s_nom` and `voltage` are mutated in place by the loop and the flow is
+    refreshed each iteration; everything else here is fixed for the run.
 
     A line's voltage is read from `bus0`, which is where PyPSA reads it from too, and the two
     ends agree on every line in these cases - verified, not assumed: `bus0` and `bus1` carry
-    the same `v_nom` for all 755. Transformers get NaN, which is the point of them.
+    the same `v_nom` for all 755. `group` is the whole line from `line_groups()`. Transformers
+    get NaN for both, which is the point of them.
     """
     lines = pd.DataFrame({
         "kind": "line",
         "s_nom": network.lines["s_nom"].astype(float),
         "voltage": network.lines["bus0"].map(network.buses["v_nom"]).astype(float),
+        "group": line_groups(network),
         "s_nom_source": network.lines.get("s_nom_source", pd.Series("", index=network.lines.index)),
     })
     transformers = pd.DataFrame({
         "kind": "transformer",
         "s_nom": network.transformers["s_nom"].astype(float),
         "voltage": np.nan,
+        "group": np.nan,
         "s_nom_source": network.transformers.get(
             "s_nom_source", pd.Series("", index=network.transformers.index)),
     })
@@ -233,16 +295,82 @@ def loading(network, table: pd.DataFrame) -> pd.Series:
     return pd.Series(flow.to_numpy(float) / np.where(s_nom > 0, s_nom, np.nan), index=table.index)
 
 
-def worst_upgradable(table: pd.DataFrame, load: pd.Series) -> str | None:
-    """The most loaded line that is over THRESHOLD and still has a rung above it.
+def worst_upgradable(table: pd.DataFrame, load: pd.Series) -> tuple[str, list[str]] | None:
+    """The most loaded circuit over THRESHOLD with a rung above it, and its whole line.
 
     Not simply "the most loaded branch": a transformer has no voltage class to step and a line
     already at 380 kV has nowhere to go, so ranking those in would stall the loop while lines
     below them were still upgradable.
+
+    Returns the worst circuit and every circuit of its group, the worst one first. A group
+    shares one voltage by construction and every step moves all of it, so if one circuit can
+    step, they all can.
     """
     lines = table["kind"].eq("line") & table["voltage"].map(next_voltage).notna()
     candidates = load.where(lines & load.gt(THRESHOLD)).dropna()
-    return None if candidates.empty else str(candidates.idxmax())
+    if candidates.empty:
+        return None
+    worst = str(candidates.idxmax())
+    group = table.index[table["group"].eq(table.at[worst, "group"])]
+    return worst, [worst] + [str(b) for b in group if b != worst]
+
+
+# ---- map ---- #
+
+
+def plot_upgrades(case_dir: Path, network, final: pd.DataFrame, path: Path, title: str) -> None:
+    """Every circuit on a map: unchanged in grey, upgraded in the colour of its final rung.
+
+    Positions come from `buses.csv` through `gwg.read_case()`, not from `network.buses`:
+    PyPSA fills a missing `x`/`y` with 0.0 on load, so a third of the buses would read as
+    placed and be drawn at 0 N 0 E. The CSV keeps them NaN, and they are filled from directly
+    connected neighbours with `gwg.impute_coordinates()`, twice, as `gwg.geocode()` does - one
+    hop per pass. A circuit whose ends are still unplaced after that is not drawn, and the title
+    says how many upgraded circuits that left off the map, so a missing reinforcement reads as
+    missing rather than as never having happened.
+    """
+    buses, branches = gwg.read_case(case_dir)
+    buses = gwg.impute_coordinates(buses, branches)
+    buses = gwg.impute_coordinates(buses, branches)
+    xy = buses.set_index("name")[["x", "y"]]
+
+    lines = final[final["kind"].eq("line")].join(network.lines[["bus0", "bus1"]])
+    a = xy.reindex(lines["bus0"]).to_numpy(float)
+    b = xy.reindex(lines["bus1"]).to_numpy(float)
+    drawable = np.isfinite(a).all(axis=1) & np.isfinite(b).all(axis=1)
+    segments = np.stack([a, b], axis=1)
+    upgraded = lines["upgraded"].to_numpy(bool)
+
+    fig, ax = plt.subplots(figsize=(8, 9.5))
+    kept = drawable & ~upgraded
+    ax.add_collection(LineCollection(segments[kept], colors="#bdbdbd", linewidths=0.5,
+                                     zorder=1, label=f"unchanged ({int(kept.sum())})"))
+    for rung, colour in RUNG_COLOURS.items():
+        sel = drawable & upgraded & lines["voltage"].eq(rung).to_numpy()
+        if sel.any():
+            ax.add_collection(LineCollection(segments[sel], colors=colour, linewidths=2.2,
+                                             zorder=2, label=f"upgraded to {rung:.0f} kV "
+                                                             f"({int(sel.sum())})"))
+            # A dot at the midpoint as well, because the Dublin circuits are a few km long and
+            # a line that short vanishes at island scale - the dot keeps every upgrade visible.
+            mid = segments[sel].mean(axis=1)
+            ax.scatter(mid[:, 0], mid[:, 1], s=22, c=colour, edgecolors="white",
+                       linewidths=0.5, zorder=4)
+    ax.scatter(xy["x"], xy["y"], s=1.5, c="#555555", linewidths=0, zorder=3)
+
+    ax.set_aspect(1 / np.cos(np.deg2rad(np.nanmean(xy["y"]))))  # rough WGS84 fix
+    ax.autoscale_view()
+    ax.set_xlabel("longitude")
+    ax.set_ylabel("latitude")
+    ax.legend(loc="upper left", fontsize=8, frameon=False)
+    off_map = int((upgraded & ~drawable).sum())
+    ax.set_title(f"{title}\n{int(drawable.sum())}/{len(lines)} circuits placed; "
+                 f"{off_map} upgraded circuit{'s' if off_map != 1 else ''} not placeable",
+                 fontsize=9)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
 
 
 # ---- entry point ---- #
@@ -297,27 +425,31 @@ def main() -> None:
             outcome = "converged"
             break
 
-        branch = worst_upgradable(table, load)
-        if branch is None:
+        picked = worst_upgradable(table, load)
+        if picked is None:
             outcome = "stalled"
             break
         if step == MAX_UPGRADES:
             outcome = "capped"
             break
 
-        v_now = float(table.at[branch, "voltage"])
+        worst, members = picked
+        v_now = float(table.at[worst, "voltage"])
         v_next = next_voltage(v_now)
         scale = v_next / v_now
-        s_now = float(table.at[branch, "s_nom"])
 
-        log.append({
-            "step": len(log) + 1, "branch": branch, "loading": float(load[branch]),
-            "v_from": v_now, "v_to": v_next, "s_nom_from": s_now, "s_nom_to": s_now * scale,
-            "overloaded_before": int(over.sum()), "max_loading_before": float(load.max()),
-        })
-
-        table.loc[branch, ["voltage", "s_nom"]] = [v_next, s_now * scale]
-        network.lines.loc[branch, "s_nom"] = s_now * scale
+        # One row per circuit, all under the same step, so upgrades.csv shows which circuits
+        # moved with the one that triggered it.
+        for branch in members:
+            s_now = float(table.at[branch, "s_nom"])
+            log.append({
+                "step": step + 1, "branch": branch, "trigger": worst,
+                "loading": float(load[branch]),
+                "v_from": v_now, "v_to": v_next, "s_nom_from": s_now, "s_nom_to": s_now * scale,
+                "overloaded_before": int(over.sum()), "max_loading_before": float(load.max()),
+            })
+            table.loc[branch, ["voltage", "s_nom"]] = [v_next, s_now * scale]
+            network.lines.loc[branch, "s_nom"] = s_now * scale
 
     # ---- what happened ---- #
 
@@ -340,6 +472,7 @@ def main() -> None:
 
     over = load.gt(THRESHOLD)
     upgrades = pd.DataFrame(log)
+    steps = int(upgrades["step"].nunique()) if len(upgrades) else 0
     moved = table["voltage"].ne(start_voltage) & table["kind"].eq("line")
 
     # The base and the threshold go in the filename for the reason get_flow_graph.py puts
@@ -354,6 +487,9 @@ def main() -> None:
         overloaded=over, upgraded=moved)
     final.sort_values("loading", ascending=False).to_csv(out / f"branch_loading_{stem}.csv")
     upgrades.to_csv(out / f"upgrades_{stem}.csv", index=False)
+    plot_upgrades(case_dir, network, final, out / f"upgrades_{stem}.pdf",
+                  f"{CASE} - {DISPATCH_BASE}, threshold {THRESHOLD:.0%}: {steps} steps, "
+                  f"{int(moved.sum())} circuits upgraded ({outcome})")
 
     remaining = load.where(over).dropna().sort_values(ascending=False)
     blocked = final.loc[remaining.index]
@@ -373,6 +509,7 @@ def main() -> None:
     listing = "\n".join(
         f"    {r.step:>3}. {r.branch:<22} {r.loading:>7.1%} of {r.s_nom_from:>7,.0f} MVA"
         f"   {r.v_from:>5.0f} -> {r.v_to:>3.0f} kV   {r.s_nom_to:>7,.0f} MVA"
+        + ("" if r.branch == r.trigger else "   (same line)")
         for r in upgrades.head(20).itertuples()) or "    (none)"
     tail = (f"\n    ... {len(upgrades) - 20} more, all of them in upgrades.csv"
             if len(upgrades) > 20 else "")
@@ -409,8 +546,9 @@ def main() -> None:
         f"{int(first.gt(THRESHOLD).sum())} over {THRESHOLD:.0%} "
         f"({int((first.gt(THRESHOLD) & table['kind'].eq('line')).sum())} lines, "
         f"{int((first.gt(THRESHOLD) & table['kind'].eq('transformer')).sum())} transformers)\n"
-        f"  upgraded   {len(upgrades)} upgrade{'s' if len(upgrades) != 1 else ''} to "
-        f"{int(moved.sum())} line{'s' if int(moved.sum()) != 1 else ''}: {rungs}\n"
+        f"  upgraded   {steps} step{'s' if steps != 1 else ''} (MAX_UPGRADES = {MAX_UPGRADES}), "
+        f"{len(upgrades)} circuit upgrade{'s' if len(upgrades) != 1 else ''} to "
+        f"{int(moved.sum())} circuit{'s' if int(moved.sum()) != 1 else ''}: {rungs}\n"
         f"             {original.sum():,.0f} -> {table['s_nom'].sum():,.0f} MVA of rating "
         f"({table['s_nom'].sum() / original.sum() - 1:+.1%})\n"
         f"{listing}{tail}\n"
@@ -422,7 +560,8 @@ def main() -> None:
         f"             every lpf above returned the same flows. The loading falls because the\n"
         f"             rating grows, never because power moved. See the docstring.\n"
         f"  wrote      {out / f'upgrades_{stem}.csv'}\n"
-        f"             {out / f'branch_loading_{stem}.csv'}"
+        f"             {out / f'branch_loading_{stem}.csv'}\n"
+        f"             {out / f'upgrades_{stem}.pdf'}"
     )
 
 

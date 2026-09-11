@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["numpy", "pandas", "scipy>=1.14", "matplotlib", "pypsa"]
+# dependencies = ["numpy", "pandas", "scipy>=1.14", "matplotlib", "pypsa", "highspy>=1.7"]
 # ///
 """The flow-weighted spectrum and clustering for every hour of the synthetic week.
 
@@ -8,7 +8,15 @@
 and reports how the partition moves - which is the question the synthetic profiles exist to
 answer and the tytfs cases cannot, having a single snapshot called "now".
 
-The whole run takes a few seconds, for two reasons worth knowing:
+**The dispatch is capped by default.** DISPATCH = "capacity_constrained" runs PyPSA's LOPF
+(HiGHS) over the whole week, the solve congested_lines.py uses: every branch's s_nom is a hard
+constraint, so generation is redistributed round the system until nothing is over its rating,
+with load shedding at the value of lost load only where no redispatch can avoid it. The
+older "prorata" dispatch - every unit at the same share of its availability, blind to the
+ratings - is kept as the alternative; its flows can and do sit above 100%. Capped outputs
+carry a `_capped` suffix so the two never overwrite each other.
+
+Past the dispatch, the run takes a few seconds, for two reasons worth knowing:
 
   * **The incidence structure is constant.** Only the edge weights change between hours, so
     the (i, j) index is built once and the data vector swapped per hour. Calling
@@ -32,7 +40,9 @@ is measured after alignment.
 **Read the floor before reading lambda_2.** Under `headroom` every corridor at or above 100%
 of its rating clamps to HEADROOM_FLOOR whatever its overload, so lambda_2 plateaus as soon as
 anything saturates. It separates congested hours from clear ones cleanly, and does not rank
-the congested ones against each other.
+the congested ones against each other. `loading` has no plateau at the top - an overloaded
+corridor simply scores above 1 - but clamps the other end: every element carrying under
+FLOW_FLOOR reads as FLOW_FLOOR, and those idle elements are its weakest ties.
 
 Only the kit dataset has a week in it; a one-snapshot case raises rather than producing a
 series of length one.
@@ -74,12 +84,17 @@ sys.path.insert(0, str(gwg.PYPSA_DIR.parent.parent / "participant-kit"))
 # ---- what to run ---- #
 
 CASE = "WP2033_all-island"    # kit cases only: {WP,SV}{2024,2033}_{all-island,north-west}
-WEIGHTING = "headroom"        # "headroom" | "inverse_flow"
+WEIGHTING = "loading"        # "headroom" | "loading" | "inverse_flow"
 K = 6                         # clusters wanted
 EMBEDDING = "sym"             # "sym" | "rw" | "unnorm"
 
-EXTRA = 5                     # eigenpairs beyond K, so the gap after the K-th is visible
+EXTRA = 10                     # eigenpairs beyond K, so the gap after the K-th is visible
 RESTARTS = 10                 # k-means++ draws per hour; best of them is kept
+
+# "capacity_constrained": PyPSA's LOPF, s_nom a hard limit, power redistributed round the
+#     system (the congested_lines.py solve). "prorata": per-area pro-rata, ratings ignored.
+DISPATCH = "capacity_constrained"   # "capacity_constrained" | "prorata"
+DISPATCHES = ("capacity_constrained", "prorata")
 
 #: Eigenvalues below this count as "nearly zero" - one nearly-severed piece each.
 NEAR_ZERO = 1e-4
@@ -135,6 +150,41 @@ def prorata_injections(network) -> tuple[pd.DataFrame, pd.DataFrame]:
     return dispatch, p
 
 
+def capped_injections(network) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Dispatch and bus injections from PyPSA's capacity-constrained LOPF, every snapshot.
+
+    The solve congested_lines.capped_injections makes - network.optimize with HiGHS, each
+    branch's s_nom a hard constraint - returned in the shapes prorata_injections returns, so
+    the flow maths and the graph downstream are untouched; only the dispatch feeding them
+    differs. It cannot simply be imported from there: congested_lines imports this module.
+
+    The solve schedules the DC links too, so their injections are added at both ends. The
+    system as a whole then does not sum to zero - Moyle loses ~0.8% in conversion - but each
+    synchronous area does, and each area is what the pseudoinverse solves on its own, so the
+    balance is checked per area.
+    """
+    network.optimize(network.snapshots, solver_name="highs",
+                     solver_options={"output_flag": False}, progress=False)
+    dispatch = network.generators_t.p.reindex(columns=network.generators.index).fillna(0.0)
+
+    signed = dispatch * network.generators["sign"].to_numpy()
+    p = signed.T.groupby(network.generators["bus"].to_numpy()).sum().T
+    p = p.sub(network.loads_t.p_set.T.groupby(network.loads["bus"].to_numpy()).sum().T,
+              fill_value=0.0)
+    p = p.reindex(columns=network.buses.index).fillna(0.0)
+    for name in network.links.index:
+        p0 = network.links_t.p0[name]
+        p[network.links.at[name, "bus0"]] -= p0
+        p[network.links.at[name, "bus1"]] += p0 * network.links.at[name, "efficiency"]
+
+    network.determine_network_topology()
+    residual = float(p.T.groupby(network.buses["sub_network"]).sum().abs().max().max())
+    if residual > 1e-2:
+        raise RuntimeError(f"LOPF injections do not balance within a synchronous area: "
+                           f"worst area-hour off by {residual:,.4f} MW")
+    return dispatch, p
+
+
 def branch_flows(network, injections: pd.DataFrame) -> pd.DataFrame:
     """|MW| on every branch for every snapshot, from one pseudoinverse and one matmul.
 
@@ -186,6 +236,8 @@ def weights(nominal: np.ndarray, used: np.ndarray) -> np.ndarray:
     """One hour of edge affinities, under WEIGHTING - the formulas get_flow_graph uses."""
     if WEIGHTING == "headroom":
         return np.maximum(nominal - used, gfg.HEADROOM_FLOOR)
+    if WEIGHTING == "loading":
+        return gfg.rating_share(nominal, used)
     return 1.0 / np.maximum(used, gfg.FLOW_FLOOR)
 
 
@@ -237,7 +289,8 @@ def plot_spectrum(series: pd.DataFrame, snaps, path: Path) -> None:
     handles = ax.get_legend_handles_labels()[0] + twin.get_legend_handles_labels()[0]
     ax.legend(handles, [h.get_label() for h in handles], loc="lower left", fontsize=9,
               frameon=False)
-    ax.set_title(f"{CASE} - {WEIGHTING}: how close the grid is to splitting, hour by hour")
+    ax.set_title(f"{CASE} - {WEIGHTING}, {DISPATCH}: how close the grid is to splitting, "
+                 f"hour by hour")
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
@@ -312,7 +365,8 @@ def plot_membership(series: pd.DataFrame, labels: np.ndarray, snaps, node_index:
 
     ax.set_ylabel(f"node - grouped by cluster at {pd.Timestamp(snaps[reference]):%a %H:%M} "
                   f"(dashed), loyal nodes first within each group")
-    ax.set_title(f"{CASE} - {WEIGHTING}: cluster membership, k = {k}, aligned hour to hour"
+    ax.set_title(f"{CASE} - {WEIGHTING}, {DISPATCH}: cluster membership, k = {k}, aligned "
+                 f"hour to hour"
                  f"   (zoom in: one cell per node per hour)")
     ax.grid(False)
     fig.tight_layout()
@@ -329,6 +383,8 @@ def main() -> None:
         raise ValueError(f"WEIGHTING must be one of {gfg.WEIGHTINGS}, not {WEIGHTING!r}")
     if EMBEDDING not in spec.EMBEDDINGS:
         raise ValueError(f"EMBEDDING must be one of {spec.EMBEDDINGS}, not {EMBEDDING!r}")
+    if DISPATCH not in DISPATCHES:
+        raise ValueError(f"DISPATCH must be one of {DISPATCHES}, not {DISPATCH!r}")
 
     # Borrow get_flow_graph's own root resolution rather than recomputing the path, so the
     # two cannot disagree about where the kit lives.
@@ -349,8 +405,14 @@ def main() -> None:
             f"{CASE} has {len(snaps)} snapshot(s), so there is no week to analyse. The tytfs "
             f"cases carry a single snapshot called 'now' - use get_flow_graph.py for those.")
 
-    dispatch, injections = prorata_injections(network)
+    if DISPATCH == "capacity_constrained":
+        dispatch, injections = capped_injections(network)
+    else:
+        dispatch, injections = prorata_injections(network)
     flows = branch_flows(network, injections)
+    solved = time.perf_counter()
+    shed = network.generators.index[network.generators["carrier"].isin(gfg.ARTIFICIAL_CARRIERS)]
+    shed_mwh = float(dispatch.reindex(columns=shed).fillna(0.0).clip(lower=0.0).sum().sum())
 
     (node_index, rows, cols, branch_names, s_nom,
      generator_names, p_nom) = structure(case_dir)
@@ -373,9 +435,14 @@ def main() -> None:
     for t in range(len(snaps)):
         data = np.r_[weights(s_nom, flow_by_branch[:, t]),
                      weights(p_nom, used_by_generator[:, t])]
-        pinned[t] = int((data <= gfg.HEADROOM_FLOOR * (1 + 1e-9)).sum()
-                        if WEIGHTING == "headroom"
-                        else (data >= (1.0 / gfg.FLOW_FLOOR) * (1 - 1e-9)).sum())
+        if WEIGHTING == "headroom":
+            # Branches only: under the capped dispatch a unit running flat out has zero
+            # headroom too, but a generator leaf at the floor cuts nothing off, and counting it
+            # would make "corridors at or over rating" untrue.
+            pinned[t] = int((data[:len(s_nom)] <= gfg.HEADROOM_FLOOR * (1 + 1e-9)).sum())
+        else:   # loading and inverse_flow both clamp the same idle elements at FLOW_FLOOR
+            used = np.r_[flow_by_branch[:, t], used_by_generator[:, t]]
+            pinned[t] = int((used < gfg.FLOW_FLOOR).sum())
         A = sparse.csr_array(
             sparse.coo_array((np.r_[data, data], (np.r_[rows, cols], np.r_[cols, rows])),
                              shape=(n_nodes, n_nodes)).tocsr())
@@ -397,7 +464,9 @@ def main() -> None:
     series = pd.DataFrame({
         "lambda_2": eigenvalues[:, 1],
         "max_loading": np.nanmax(loading, axis=0),
-        "branches_over": np.nansum(loading > 1.0, axis=0).astype(int),
+        # A tolerance, because the capped solve holds a binding branch at its rating to solver
+        # precision, and 1.0000001 x rating is a binding constraint, not an overload.
+        "branches_over": np.nansum(loading > 1.0 + 1e-6, axis=0).astype(int),
         "near_zero": (eigenvalues < NEAR_ZERO).sum(axis=1),
         "pinned_edges": pinned,
         "components": components,
@@ -409,7 +478,7 @@ def main() -> None:
         series[f"eig_{i + 1}"] = eigenvalues[:, i]
 
     out = gfg.out_dir(CASE, "week")
-    stem = f"{EMBEDDING}_{WEIGHTING}"
+    stem = f"{EMBEDDING}_{WEIGHTING}" + ("_capped" if DISPATCH == "capacity_constrained" else "")
     series.to_csv(out / f"series_{stem}.csv")
     pd.DataFrame(labels.T, index=pd.Index(node_index["name"], name="node"),
                  columns=snaps).to_csv(out / f"clusters_{stem}_k{K}.csv")
@@ -419,7 +488,7 @@ def main() -> None:
              snapshots=np.array([str(s) for s in snaps]),
              max_loading=series["max_loading"].to_numpy(),
              case=np.array(CASE), weighting=np.array(WEIGHTING),
-             embedding=np.array(EMBEDDING), k=np.array(K))
+             embedding=np.array(EMBEDDING), k=np.array(K), dispatch=np.array(DISPATCH))
     plot_spectrum(series, snaps, out / f"lambda2_{stem}.pdf")
     plot_membership(series, labels, snaps, node_index, out / f"membership_{stem}_k{K}.pdf")
 
@@ -441,6 +510,15 @@ def main() -> None:
             f"             lambda_2 plateaus once anything saturates, so it separates\n"
             f"             congested hours from clear ones and not the congested ones from\n"
             f"             each other. Moving the floor moves the plateau, nothing else.\n")
+    elif WEIGHTING == "loading":
+        # Loading rises on the busy corridors and binds them tighter, while the idle ones stay
+        # at the floor - so as with inverse_flow, no physics fixes the sign of the correlation.
+        sign_note = "sign is not fixed by physics under this weighting - see the code comment"
+        clamp_note = (
+            f"  floor      {gfg.FLOW_FLOOR:g} MW; {pinned.min()}-{pinned.max()} edges carrying "
+            f"under it, read at {gfg.FLOW_FLOOR:g} MW.\n"
+            f"             They are the weakest ties, so under loading the cuts fall on the\n"
+            f"             corridors power is not using; a full corridor is a strong tie.\n")
     else:
         sign_note = "sign is not fixed by physics under this weighting - see the code comment"
         clamp_note = (
@@ -450,6 +528,8 @@ def main() -> None:
             f"             lambda_2 plateau here; the cuts fall on the busiest corridors.\n")
     print(
         f"{CASE} +generators - {WEIGHTING}, {len(snaps)} snapshots  [{elapsed:.1f}s]\n"
+        f"  dispatch   {DISPATCH} ({solved - started:.1f}s to dispatch and flow); "
+        f"{shed_mwh:,.0f} MWh of load shed over the week\n"
         f"  graph      {n_nodes} nodes, structure built once; "
         f"components always {set(components.tolist())}\n"
         f"  loading    {series['max_loading'].min():.1%} to "
