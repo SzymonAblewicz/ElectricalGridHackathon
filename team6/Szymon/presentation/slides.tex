@@ -1,0 +1,165 @@
+\documentclass[11pt,aspectratio=169]{beamer}
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{microtype}
+
+\definecolor{ink}{HTML}{0B0B0B}
+\definecolor{soft}{HTML}{52514E}
+\definecolor{accent}{HTML}{2A78D6}
+\definecolor{warn}{HTML}{D03B3B}
+
+\newcommand{\T}{^{\mathsf{T}}}
+\newcommand{\Lp}{L^{+}}
+\renewcommand{\note}[1]{{\color{soft}\small #1}}
+
+\usetheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamercolor{structure}{fg=accent}
+\setbeamercolor{normal text}{fg=ink}
+\setbeamerfont{frametitle}{series=\bfseries}
+\setbeamertemplate{frametitle}[default][left]
+\setbeamercolor{footline}{fg=soft}
+\setbeamertemplate{footline}{\hfill\color{soft}\small\insertframenumber/\inserttotalframenumber\hspace{4mm}\vspace{2mm}}
+
+\input{generated/macros}
+\input{generated/protocol_macros}
+
+\title{Shift Factors on the Irish Transmission Grid}
+\subtitle{Constraint groups, computed analytically}
+\author{Szymon Ablewicz --- Team 6, Electrical Grid Hackathon 2026}
+\date{}
+
+\begin{document}
+
+\begin{frame}
+\titlepage
+\end{frame}
+
+% ---------------------------------------------------------------
+\begin{frame}{1. A new shift factor, $S_{e,n}$}
+
+The change in flow on branch $e$ per MW curtailed at wind node $n$.
+Positive means relief, negative means it loads the branch further.
+
+\bigskip
+\begin{equation*}
+\text{PTDF} = BK\T\Lp, \qquad
+S_{e,:} = \text{PTDF}_{e,:}\cdot\operatorname{sign}(f_e)
+\end{equation*}
+
+\bigskip
+A $\gne\times\gnb$ matrix, built once from topology and reactance ---
+$\gncong$ branches reach their rating over the week, $\gncongtx$ of them
+transformers.
+
+\end{frame}
+
+% ---------------------------------------------------------------
+\begin{frame}{2. Why it's better}
+
+\begin{itemize}
+  \item \textbf{EirGrid:} perturb one farm by 10\,MW, re-run the load
+        flow, read the change. One number per run.
+  \bigskip
+  \item \textbf{This method:} an analytic derivative --- all
+        $\gne\times\gnwind$ branch--node pairs at once, exact to the DC
+        model.
+  \bigskip
+  \item \textbf{Verified} against an independent solver (PyPSA):
+        residual $= \gresid$\,MW.
+\end{itemize}
+
+\end{frame}
+
+% ---------------------------------------------------------------
+\begin{frame}{3. The issue with SF constraint groups, and the fix}
+
+EirGrid's group: $\{\,n : S_{e,n} \ge \tau\,\}$, $\tau = \pTau$ ---
+one row, read in isolation. Blind to every other branch.
+
+\medskip
+Net sensitivity alone made it \textbf{worse}: \pOvlBrokeEvents\ events
+broke a line, against \pEirBrokeEvents\ for the plain method.
+
+\medskip
+\textbf{The veto:} cap each node's cut at the point where any other
+live branch would be pushed over its rating.
+
+\bigskip
+\begin{center}\small
+\begin{tabular}{lrr}
+\toprule
+& \textbf{cleared} & \textbf{broke a line}\\
+\midrule
+Shift-factor threshold (today) & \pEirCleared\% & \pEirBrokeEvents\ events\\
+Net sensitivity + veto & \pVetoCleared\% & \pVetoBrokeEvents\ events\\
+\bottomrule
+\end{tabular}
+\end{center}
+\note{\pN\ (outage, hour) events.}
+
+\end{frame}
+
+% ---------------------------------------------------------------
+\begin{frame}{4. Fixed for every N--1 contingency, computed once}
+
+\begin{itemize}
+  \item Group membership depends only on topology and reactance ---
+        not hour, not weather.
+  \bigskip
+  \item Precomputed for all \pTripsOutages\ outages $\rightarrow$
+        \pTripsCircuits\ circuits ever at risk, \pTrips\ lookup rows.
+  \bigskip
+  \item \pVetoedFromEirPct\% of EirGrid's own group memberships fail
+        the veto and are excluded before dispatch.
+  \bigskip
+  \item Online, only the live flow and the final MW instruction are
+        computed.
+\end{itemize}
+
+\end{frame}
+
+% ---------------------------------------------------------------
+\begin{frame}{5. Farms that can run full blast}
+
+\begin{itemize}
+  \item Top 5 nodes account for \pTopFivePct\% of all MW ever
+        curtailed; top 20 for \pTopTwentyPct\%.
+  \bigskip
+  \item \pRareN\ of \gnwind\ nodes --- \pRareFleetPct\% of fleet
+        capacity --- are cut in under 1\% of events.
+  \bigskip
+  \item Across the entire N--1 study, only \pOverallCutPct\% of all
+        wind offered is ever curtailed.
+\end{itemize}
+
+\end{frame}
+
+% ---------------------------------------------------------------
+\begin{frame}{6. Application: stopping cascading outages}
+
+\pCascN\ starting outages, chain run to exhaustion:
+
+\bigskip
+\begin{center}\small
+\begin{tabular}{lrrr}
+\toprule
+& \textbf{lines lost} & \textbf{spread} & \textbf{islanded}\\
+\midrule
+No remedy & \pNothingLost & \pNothingSpread\ / \pCascN & \pNothingIsl\\
+EirGrid threshold & \pCEirLost & \pCEirSpread\ / \pCascN & \pCEirIsl\\
+Net sensitivity + veto & \pCVetoLost & \pCVetoSpread\ / \pCascN & \pCVetoIsl\\
+Safe optimum (LP) & \pCLpLost & \pCLpSpread\ / \pCascN & \pCLpIsl\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\bigskip
+\note{Live demo: \texttt{cascade3.html}}
+
+\end{frame}
+
+\end{document}
