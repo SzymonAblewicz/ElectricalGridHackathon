@@ -34,8 +34,11 @@ import matplotlib.pyplot as plt  # noqa: E402  (needs the backend set above)
 from matplotlib.collections import LineCollection  # noqa: E402
 
 FOLDER = Path(__file__).resolve().parent
-PYPSA_DIR = FOLDER.parent.parent / "grid_TF_Wind" / "data" / "pypsa"
-OUT_DIR = FOLDER / "data" / "graphs"
+# FOLDER is <repo>/team6/Oleksandr/Final_scripts, so the repo root is three levels up.
+PYPSA_DIR = FOLDER.parent.parent.parent / "grid_TF_Wind" / "data" / "pypsa"
+#: Every output this folder writes lives under here - graphs, congestion, sensitivity.
+DATA_DIR = FOLDER / "data"
+OUT_DIR = DATA_DIR / "graphs"
 
 BUS_COLUMNS = ["name", "v_nom", "x", "y", "jurisdiction", "station"]
 RANDOM_RADIUS = 0.03

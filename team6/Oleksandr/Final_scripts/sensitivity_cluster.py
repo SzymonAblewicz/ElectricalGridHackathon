@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parent
-sys.path.insert(0, str(FOLDER.parent))  # cluster.py lives one level up
+sys.path.insert(0, str(FOLDER))  # cluster.py sits beside this one
 
 import matplotlib  # noqa: E402
 import numpy as np  # noqa: E402
@@ -47,7 +47,7 @@ from scipy import sparse  # noqa: E402
 import graph_lib as gwg  # noqa: E402
 from cluster import kmeans  # noqa: E402
 
-DATA = FOLDER.parent / "data"
+DATA = gwg.DATA_DIR
 SOURCE = DATA / "generator_sensitivity_WP2033.csv"
 # The network the sensitivities were computed on (generator_sensitivity.py), drawn for the map.
 NETWORK = FOLDER.parents[1] / "Szymon" / "participant-kit new" / "networks" / "WP2033_all-island"

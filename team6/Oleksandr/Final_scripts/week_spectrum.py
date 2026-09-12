@@ -57,7 +57,7 @@ import time
 from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parent
-sys.path.insert(0, str(FOLDER.parent))
+sys.path.insert(0, str(FOLDER))  # graph_lib, cluster, spectrum sit beside this one
 
 import matplotlib  # noqa: E402
 import numpy as np  # noqa: E402

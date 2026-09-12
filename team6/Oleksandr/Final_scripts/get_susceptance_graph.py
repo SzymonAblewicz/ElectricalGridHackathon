@@ -47,7 +47,7 @@ import warnings
 from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parent
-sys.path.insert(0, str(FOLDER.parent))  # get_weighted_graph and spectrum live one level up
+sys.path.insert(0, str(FOLDER))  # graph_lib and spectrum sit beside this one
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402

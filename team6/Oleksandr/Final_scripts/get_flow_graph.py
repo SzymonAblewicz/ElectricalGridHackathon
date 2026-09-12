@@ -78,7 +78,7 @@ import warnings
 from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parent
-sys.path.insert(0, str(FOLDER.parent))  # get_weighted_graph and spectrum live one level up
+sys.path.insert(0, str(FOLDER))  # graph_lib and spectrum sit beside this one
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
@@ -124,10 +124,10 @@ def quiet() -> None:
 # reports the eigengap, which is the spectrum's own opinion on how many clusters there are.
 
 DATASET = "kit"               # "tytfs" | "kit"
-CASE = "WP2033_all-island"    # a directory name under whichever DATASET selects
-WEIGHTING = "loading"        # "headroom" | "loading" | "inverse_flow"
+CASE = "WP2024_all-island"    # a directory name under whichever DATASET selects
+WEIGHTING = "inverse_flow"        # "headroom" | "loading" | "inverse_flow"
 BALANCE = "scale_loads"       # "scale_loads" | "none" - read the docstring before changing
-K = 6                       # clusters wanted
+K = 11                       # clusters wanted
 EMBEDDING = "sym"             # "sym" | "rw" | "unnorm"
 
 # --- kit only; ignored when DATASET == "tytfs" --- #

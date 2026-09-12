@@ -66,7 +66,7 @@ from matplotlib.collections import LineCollection  # noqa: E402
 
 import cluster as clu  # noqa: E402
 import cluster_maps  # noqa: E402
-import get_flow_graph as gfg  # noqa: E402
+import team6.Oleksandr.Final_scripts.get_flow_graph as gfg  # noqa: E402
 import spectrum as spec  # noqa: E402
 
 gwg = gfg.gwg  # whatever graph module get_flow_graph imports, so the two never diverge

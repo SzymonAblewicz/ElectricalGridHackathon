@@ -63,9 +63,9 @@ from scipy import sparse  # noqa: E402
 
 import cluster as clu  # noqa: E402
 import cluster_maps  # noqa: E402
-import fiedler_bisection as fb  # noqa: E402
-import get_flow_graph as gfg  # noqa: E402
-import graph_lib as gwg  # noqa: E402
+import team6.Oleksandr.old_scripts.flow.fiedler_bisection as fb  # noqa: E402
+import team6.Oleksandr.Final_scripts.get_flow_graph as gfg  # noqa: E402
+import team6.Oleksandr.Final_scripts.graph_lib as gwg  # noqa: E402
 import spectrum as spc  # noqa: E402
 
 

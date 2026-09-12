@@ -69,13 +69,28 @@ susceptance & $1/x_e$ --- static network\\
 headroom    & $s_{\text{nom}} - |F_e|$ --- one hour of dispatch\\
 \bottomrule
 \end{tabular}
+
+Spectral clustering could help in bottle necks finding. Although analysis here is taken for two different weight, 
+they are not fully independent of each other. 
+
+First, "susceptance" is an inverse of reactance so higher reactance - lower the weight. 
+This agreeds with electric flow, so the higher weight, the more probable for a flow to choose this route.
+
+Second, "headroom" is an absolute value of power that is still possible to put in the line. 
+Note that this weight is load dependent.
+
+Based on weights and the way of clusering the resulting clustering is expected to find a bootle necks 
+and hence this method could help in identification of the congested lines. 
+For this purpose, a DC aproximation of electric flow is used to find the actual the most loaded lines.
 \end{minipage}
 
 % ---------------------------------------------------------------------------
 \newpage
 \section*{WP2024 --- where the grid is loaded}
 
-\mapslide{congested_lines_WP2024_all-island_lf0.5_capped}{%
+\mapslide{congested_lines_WP2024_all-island_lf0.5_capped}{This is a heated map 
+of the grid with simulated results of currnt flow via PyPsa. It is used for 
+reference for a clustering.%
 Branches at $\ge 50\%$ of rating over one week.
 
 \medskip
@@ -86,13 +101,17 @@ Branches at $\ge 50\%$ of rating over one week.
 \section*{WP2024 --- clustering, \texorpdfstring{$k=6$}{k=6}: headroom and susceptance}
 
 \twomaps{clusters_sym_headroom_k6_20300120_1700}{clusters_sym_susceptance_k6}
+These clusters looks in someway similar and could actually find the problematic part. Hovewer, some of congested lines are remaining hidden for any type of spectral clustering. 
 
 % ---------------------------------------------------------------------------
 \newpage
 \section*{WP2024 --- the north-east cluster}
 
 \mapslide{cluster_4}{%
-171 nodes, linked to the rest through a few corridors.}
+171 nodes, linked to the rest through a few corridors. The transformator or/and 
+line near it were found found as corridors on each spectral clustering performed. 
+It also agreeds with electric flow simulation. }
+
 
 % ---------------------------------------------------------------------------
 \newpage
@@ -103,7 +122,9 @@ Branches at $\ge 50\%$ of rating over one week.
 \end{center}
 
 \noindent
-$\lambda_2$ dips whenever the maximum branch loading peaks.
+As the spectral clustering is already used for one of the flow simulations, the next question follows naturally. 
+Does clustering patttern changes over the week?
+$\lambda_2$ dips whenever the maximum branch loading peaks. 
 
 % ---------------------------------------------------------------------------
 \newpage
@@ -114,7 +135,9 @@ $\lambda_2$ dips whenever the maximum branch loading peaks.
 \end{center}
 
 \noindent
-No node changes cluster over the 168 hours.
+No node changes cluster over the 168 hours, 
+which suggest that the network topology 
+has more effect on the spectering then loading for non extreme cases.
 
 % ---------------------------------------------------------------------------
 \newpage
@@ -125,20 +148,23 @@ No node changes cluster over the 168 hours.
 \end{center}
 
 \noindent
-No gap at $k=6$; the largest gap is after 33.
+A note on the number of clusters. To find the best number of clusters, the eigen gaps are calculated. 
+It is clear that some of the clusters are prefered to another. Hovewer, the best eigen gap is after 33.
+So it motivates to check clustering with $k=33$.
 
 % ---------------------------------------------------------------------------
 \newpage
 \section*{WP2024 --- susceptance clustering, \texorpdfstring{$k=33$}{k=33}}
 
 \mapslide{clusters_sym_susceptance_k33}{%
-$k$ taken from the eigengap.}
+As this is already seen, this graph is a total mess. Unfortunately, no hidden patterns or similarity to congested lines were found.}
 
 % ---------------------------------------------------------------------------
 \newpage
 \section*{WP2033 --- where the grid is loaded}
 
 \mapslide{congested_lines_WP2033_all-island_lf0.7_capped}{%
+The previous analysis was applied to the stable grid, but what is more unstable (the predicted one) is taken?
 Branches at $\ge 70\%$ of rating over one week.
 
 \medskip
@@ -150,12 +176,23 @@ Branches at $\ge 70\%$ of rating over one week.
 
 \twomaps{wp2033_picked/clusters_sym_headroom_k6_20300120_1700}{wp2033_picked/clusters_sym_susceptance_k6}
 
+Same problems and same ideas are applied to this case. The clustering doesn't improove. No new patters are found.
+
+Hence, the conclusion is that electric network works much different from the traffic or water flow and identification of bottle necks doesn't give a full picture. 
+The improovement to this method is to account for an electricity effects and consider something else on top of pure topology. Alternatively, 
+use some other metric to assing values (for each generator) and then classify them in clusters.
 % ---------------------------------------------------------------------------
 \newpage
-\section*{WP2033 --- generators grouped by shift factor, \texorpdfstring{$k=9$}{k=9}}
+\section*{WP2033 --- generators grouped by sensetivity, \texorpdfstring{$k=9$}{k=9}}
 
 \mapslide{WP2033/generator_clusters_WP2033_k9}{%
-$k$-means on each generator's shift factors across all 980 branches.}
+$k$-means on each generator's sensetivity across 
+all 980 branches. So this clustering technically 
+shows how generators are similar between themself. 
+The pattern here is relatively similar to the above analysis, 
+which agreeds with the fact that some of the congested lines 
+were identified as bottle neck (so topology of network is important parameter 
+but definitly not the only one)}
 
 % ---------------------------------------------------------------------------
 \newpage
@@ -177,7 +214,7 @@ $k$-means on each generator's shift factors across all 980 branches.}
 \begin{picture}(0,0)
   \put(0,-584){\makebox(842,595){%
     \includegraphics[width=842pt,height=595pt,keepaspectratio]{WP2033/membership_sym_headroom_capped_k6}}}
-  \put(0,-584){\makebox(842,595){%
+  \put(0,-600){\makebox(842,595){%
     \colorbox{white}{\resizebox{0.45\paperwidth}{!}{\textbf{Questions?}}}}}
 \end{picture}
 

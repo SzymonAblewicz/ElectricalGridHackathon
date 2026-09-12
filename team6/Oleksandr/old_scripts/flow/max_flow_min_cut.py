@@ -89,8 +89,8 @@ from scipy.sparse.csgraph import maximum_flow  # noqa: E402
 
 import cluster as clu  # noqa: E402
 import cluster_maps  # noqa: E402
-import graph_lib as gwg  # noqa: E402
-import get_flow_graph as gfg  # noqa: E402
+import team6.Oleksandr.Final_scripts.graph_lib as gwg  # noqa: E402
+import team6.Oleksandr.Final_scripts.get_flow_graph as gfg  # noqa: E402
 
 
 # ---- what to run ---- #

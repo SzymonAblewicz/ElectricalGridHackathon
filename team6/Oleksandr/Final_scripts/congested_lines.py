@@ -14,7 +14,7 @@ case's own `loads_t.p_set`, the dispatch is its per-area pro-rata, and the flows
 one pseudoinverse with the phase shifters included. So a count here and a `max_loading` or
 `branches_over` there can never disagree about what flowed.
 
-Writes, into `results/<CASE>/` beside this file:
+Writes, into `data/congestion/<CASE>/`:
 
   congested_lines_<CASE>_lf<frac>.csv   every branch, most-congested first: its summary
                                         columns, then a 0/1 mark for each hour
@@ -29,8 +29,7 @@ import sys
 from pathlib import Path
 
 FOLDER = Path(__file__).resolve().parent
-sys.path.insert(0, str(FOLDER.parent))          # flow/: week_spectrum, get_flow_graph
-sys.path.insert(0, str(FOLDER.parent.parent))   # Oleksandr/: graph_lib, cluster, spectrum
+sys.path.insert(0, str(FOLDER))  # week_spectrum, get_flow_graph, graph_lib all sit beside this one
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
@@ -232,7 +231,7 @@ def main() -> None:
     table = pd.concat([table, marks], axis=1).sort_values(
         ["hours_congested", "max_loading"], ascending=False)
 
-    out = FOLDER / "results" / CASE
+    out = gwg.DATA_DIR / "congestion" / CASE
     out.mkdir(parents=True, exist_ok=True)
     stem = f"congested_lines_{CASE}_lf{LOADING_FRACTION:g}"
     if DISPATCH == "capacity_constrained":
